@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="50%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg)" />
+  <!-- Vinyl record -->
+  <circle cx="256" cy="256" r="160" fill="#09090b" opacity="0.9" />
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#27272a" stroke-width="3" />
+  <circle cx="256" cy="256" r="100" fill="none" stroke="#27272a" stroke-width="2" />
+  <!-- Center disc -->
+  <circle cx="256" cy="256" r="60" fill="url(#bg)" />
+  <circle cx="256" cy="256" r="16" fill="#09090b" />
+  <!-- Music note icon -->
+  <path d="M246 220 v60 a20 20 0 1 1 -16 -19 v-45 l50 -12 v40 a20 20 0 1 1 -16 -19 v-30 z" fill="#ffffff" opacity="0.9" />
+</svg>

@@ -1,0 +1,349 @@
+/**
+ * 账号与扫码授权弹窗 (src/components/SettingsModal.tsx)
+ * 纯二维码扫码登录（免手输 Token/UserID），展示用户头像、昵称及概念版每日打卡领 VIP
+ */
+
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Check,
+  CheckCircle2,
+  FolderSync,
+  LogOut,
+  QrCode,
+  RefreshCw,
+  Settings,
+  Sparkles,
+  User,
+  X,
+} from 'lucide-react';
+import { checkinConceptVip, getUserSettings, saveUserSettings } from '../services/audioSource';
+import { checkLoginQrCode, createLoginQrCode } from '../services/kugouAuth';
+import { usePlayer } from '../context/PlayerContext';
+import type { UserSettings } from '../types/music';
+
+interface SettingsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+  const { refreshUserSettings, syncCloudPlaylists } = usePlayer();
+  const [settings, setSettings] = useState<UserSettings>({
+    kugouToken: '',
+    kugouUserId: '',
+    autoCheckinVip: true,
+    lastCheckinDate: '',
+    customFallbackApi: '',
+  });
+
+  // 二维码状态
+  const [qrcodeKey, setQrcodeKey] = useState<string>('');
+  const [qrcodeImg, setQrcodeImg] = useState<string>('');
+  const [qrStatusText, setQrStatusText] = useState<string>('正在加载二维码...');
+  const [isQrExpired, setIsQrExpired] = useState<boolean>(false);
+  const [isQrLoading, setIsQrLoading] = useState<boolean>(false);
+
+  // 签到状态
+  const [isCheckinLoading, setIsCheckinLoading] = useState(false);
+  const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
+
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 1. 获取登录二维码
+  const loadNewQrCode = async () => {
+    setIsQrLoading(true);
+    setIsQrExpired(false);
+    setQrStatusText('正在加载二维码...');
+    try {
+      const res = await createLoginQrCode();
+      setQrcodeKey(res.qrcode);
+      setQrcodeImg(res.qrcodeImg);
+      setQrStatusText('请使用手机酷狗音乐 App 扫一扫');
+    } catch (e) {
+      console.error('[SettingsModal] 生成二维码失败:', e);
+      setQrStatusText('二维码生成失败，请点击刷新重试');
+      setIsQrExpired(true);
+    } finally {
+      setIsQrLoading(false);
+    }
+  };
+
+  // 2. 轮询二维码扫码状态
+  useEffect(() => {
+    if (!isOpen || !qrcodeKey || settings.kugouToken) {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      return;
+    }
+
+    const checkStatus = async () => {
+      try {
+        const checkRes = await checkLoginQrCode(qrcodeKey);
+
+        if (checkRes.status === 1) {
+          setQrStatusText('请使用手机酷狗音乐 App 扫一扫');
+        } else if (checkRes.status === 2) {
+          setQrStatusText('已扫码！请在手机上点击“确认登录”');
+        } else if (checkRes.status === 4 && checkRes.token) {
+          // 登录成功！
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          setQrStatusText('登录授权成功！正在同步...');
+
+          const updated = await saveUserSettings({
+            kugouToken: checkRes.token,
+            kugouUserId: checkRes.userid || '',
+            nickname: checkRes.nickname || '酷狗音乐用户',
+            avatar: checkRes.avatar || '',
+          });
+          setSettings(updated);
+
+          // 立即更新全局状态并同步用户账号下的云端歌单
+          await refreshUserSettings();
+          await syncCloudPlaylists();
+
+          // 自动触发一次概念版 VIP 打卡
+          if (updated.kugouToken && updated.kugouUserId) {
+            checkinConceptVip(updated.kugouToken, updated.kugouUserId).then((r) => {
+              setCheckinMessage(r.message);
+            });
+          }
+        } else if (checkRes.status === 5) {
+          setIsQrExpired(true);
+          setQrStatusText('二维码已失效，请点击刷新');
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+        }
+      } catch (err) {
+        console.warn('[checkStatus] 轮询异常:', err);
+      }
+    };
+
+    pollTimerRef.current = setInterval(checkStatus, 2000);
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, [isOpen, qrcodeKey, settings.kugouToken]);
+
+  // 打开弹窗初始化
+  useEffect(() => {
+    if (isOpen) {
+      getUserSettings().then((s) => {
+        setSettings(s);
+        if (!s.kugouToken) {
+          loadNewQrCode();
+        }
+      });
+      setCheckinMessage(null);
+    } else {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  // 退出登录
+  const handleLogout = async () => {
+    if (confirm('确定要退出当前酷狗账号吗？')) {
+      const updated = await saveUserSettings({
+        kugouToken: '',
+        kugouUserId: '',
+        nickname: '',
+        avatar: '',
+      });
+      setSettings(updated);
+      await refreshUserSettings();
+      setCheckinMessage(null);
+      loadNewQrCode();
+    }
+  };
+
+  // 手动打卡领 VIP
+  const handleManualCheckin = async () => {
+    if (!settings.kugouToken || !settings.kugouUserId) return;
+    setIsCheckinLoading(true);
+    setCheckinMessage(null);
+    try {
+      const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId);
+      setCheckinMessage(res.message);
+      const updated = await getUserSettings();
+      setSettings(updated);
+    } finally {
+      setIsCheckinLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in select-none">
+      <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-white/10 p-6 shadow-2xl text-white relative max-h-[92vh] overflow-y-auto custom-scrollbar">
+        {/* 关闭按钮 */}
+        <button
+          onClick={onClose}
+          className="absolute right-4 top-4 p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* 标题 */}
+        <div className="flex items-center gap-2.5 mb-5">
+          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center">
+            <QrCode className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold">酷狗账号扫码授权</h2>
+            <p className="text-xs text-zinc-400">免手动抓包输入，手机扫一扫即可绑定</p>
+          </div>
+        </div>
+
+        {/* 1. 若未登录：显示二维码扫码卡片 */}
+        {!settings.kugouToken ? (
+          <div className="flex flex-col items-center justify-center p-5 rounded-2xl bg-white/[0.02] border border-white/10 mb-5">
+            <div className="relative w-48 h-48 rounded-xl overflow-hidden bg-white p-2 shadow-xl shadow-black/60 flex items-center justify-center mb-3">
+              {qrcodeImg ? (
+                <img src={qrcodeImg} alt="登录二维码" className="w-full h-full object-contain" />
+              ) : (
+                <RefreshCw className="w-8 h-8 text-zinc-400 animate-spin" />
+              )}
+
+              {/* 过期或加载蒙版 */}
+              {(isQrExpired || isQrLoading) && (
+                <div
+                  onClick={loadNewQrCode}
+                  className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center cursor-pointer p-2 text-center"
+                >
+                  <RefreshCw className="w-7 h-7 text-cyan-400 mb-2" />
+                  <span className="text-xs text-white font-medium">二维码已失效</span>
+                  <span className="text-[10px] text-zinc-400 mt-0.5">点击刷新重试</span>
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs font-medium text-cyan-400 mb-1">{qrStatusText}</p>
+            <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
+              打开手机“酷狗音乐”或“酷狗概念版” App，进入【扫一扫】即可授权登录并同步会员权益
+            </p>
+
+            <button
+              onClick={loadNewQrCode}
+              disabled={isQrLoading}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white py-1 px-3 rounded-lg hover:bg-white/5 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isQrLoading ? 'animate-spin' : ''}`} />
+              <span>刷新二维码</span>
+            </button>
+          </div>
+        ) : (
+          /* 2. 若已登录：显示用户信息卡片与打卡面板 */
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-cyan-500/10 via-blue-500/5 to-transparent border border-cyan-500/20 mb-5">
+            <div className="flex items-center justify-between mb-3.5">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl overflow-hidden bg-zinc-800 border border-white/10 shrink-0">
+                  {settings.avatar ? (
+                    <img
+                      src={settings.avatar}
+                      alt={settings.nickname}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-zinc-400">
+                      <User className="w-6 h-6" />
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <span>{settings.nickname || '酷狗用户'}</span>
+                    <span className="px-1.5 py-0.2 rounded text-[9px] bg-emerald-500/20 text-emerald-300 font-medium">
+                      已授权
+                    </span>
+                  </h3>
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5">
+                    UID: {settings.kugouUserId}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                title="退出并切换账号"
+                className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-zinc-400 hover:text-red-400 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 概念版自动打卡与打卡记录 */}
+            <div className="pt-3 border-t border-white/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-medium text-white">App 启动时自动签到领 VIP</h4>
+                  <p className="text-[11px] text-zinc-400">每日启动自动打卡领取概念版会员时长</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.autoCheckinVip}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setSettings({ ...settings, autoCheckinVip: next });
+                    saveUserSettings({ autoCheckinVip: next });
+                  }}
+                  className="w-4 h-4 rounded accent-cyan-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-[11px] text-zinc-400">
+                  今日状态: {settings.lastCheckinDate ? `已打卡 (${settings.lastCheckinDate})` : '尚未打卡'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleManualCheckin}
+                  disabled={isCheckinLoading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-400 text-xs font-medium transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isCheckinLoading ? '打卡中...' : '立即打卡领 VIP'}</span>
+                </button>
+              </div>
+
+              {checkinMessage && (
+                <p className="text-xs text-cyan-300 bg-cyan-500/10 p-2 rounded-lg border border-cyan-500/20">
+                  {checkinMessage}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 备轨 Fallback 设置 */}
+        <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 mb-6">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 mb-2">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>备用音源（免登录 Fallback）</span>
+          </div>
+          <p className="text-[11px] text-zinc-400 leading-relaxed mb-2">
+            主轨未配置或试听片段时，自动启用全网无损检索，自动比对时长误差在 ±3 秒内的完整版本。
+          </p>
+          <input
+            type="text"
+            value={settings.customFallbackApi}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              setSettings({ ...settings, customFallbackApi: val });
+              saveUserSettings({ customFallbackApi: val });
+            }}
+            placeholder="自定义接口模板(选填): https://api.example.com?name={name}&artist={artist}"
+            className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500/50 font-mono"
+          />
+        </div>
+
+        {/* 底部按钮 */}
+        <div className="flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="px-5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-medium transition-colors"
+          >
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
