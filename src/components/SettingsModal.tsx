@@ -51,7 +51,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   // 手机端手动授权（手机无法扫描自己屏幕上的二维码）
   const [showManualAuth, setShowManualAuth] = useState(false);
   const [manualToken, setManualToken] = useState('');
-  const [manualUserid, setManualUserid] = useState('');
   const [manualAuthMsg, setManualAuthMsg] = useState<string | null>(null);
 
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -194,25 +193,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     }
   };
 
-  // 手机端手动授权：直接粘贴 Token 与 UserID 完成绑定（支持粘贴「复制凭据」的 JSON）
+  // 手机端手动授权：单文本框粘贴凭据，自动解析 JSON / token:userid / 纯 Token
   const handleManualAuth = async () => {
-    let token = manualToken.trim();
-    const rawUserid = manualUserid.trim();
-    let userid = rawUserid;
-
-    // 兼容粘贴 {"token":"...","userid":"..."} 格式
-    if (token.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(token);
-        token = String(parsed.token || '');
-        if (!userid) userid = String(parsed.userid || '');
-      } catch {
-        setManualAuthMsg('粘贴内容不是有效的凭据 JSON');
-        return;
-      }
+    const raw = manualToken.trim();
+    if (!raw) {
+      setManualAuthMsg('请先粘贴授权凭据');
+      return;
     }
+
+    let token = '';
+    let userid = '';
+
+    try {
+      if (raw.startsWith('{')) {
+        // JSON 格式：{"token":"...","userid":"..."}
+        const parsed = JSON.parse(raw);
+        token = String(parsed.token || '');
+        userid = String(parsed.userid || '');
+      } else {
+        // token:userid 组合格式（token 长度固定 64 位十六进制）
+        const m = raw.match(/([a-f0-9]{64})\D*(\d{4,})/i);
+        if (m) {
+          token = m[1];
+          userid = m[2];
+        } else {
+          token = raw.replace(/\s/g, '');
+        }
+      }
+    } catch {
+      setManualAuthMsg('粘贴内容不是有效的凭据 JSON');
+      return;
+    }
+
     if (!token || !userid) {
-      setManualAuthMsg('请填写 Token 和 UserID');
+      setManualAuthMsg(token ? '凭据中缺少 UserID（请粘贴完整的 JSON 凭据）' : '未识别到有效 Token');
       return;
     }
     try {
@@ -302,21 +316,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             {showManualAuth && (
               <div className="mt-3 w-full text-left p-3 rounded-xl bg-black/30 border border-white/10 space-y-2">
                 <p className="text-[10px] text-zinc-400 leading-relaxed">
-                  方式一：长按上方二维码可保存/分享给其他设备扫码；<br />
-                  方式二：在电脑版登录后，把 Token 和 UID 粘贴到这里（电脑版设置弹窗可查看）。
+                  在电脑版登录后点「复制凭据」，把复制的内容粘贴到下方（支持 JSON 或仅 Token）；<br />
+                  也可以长按上方二维码保存后，用其他设备扫码。
                 </p>
-                <input
+                <textarea
                   value={manualToken}
                   onChange={(e) => setManualToken(e.target.value)}
-                  placeholder="粘贴 Token"
-                  className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-[11px] text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
-                />
-                <input
-                  value={manualUserid}
-                  onChange={(e) => setManualUserid(e.target.value)}
-                  placeholder="粘贴 UserID（纯数字）"
-                  inputMode="numeric"
-                  className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-[11px] text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                  placeholder={'粘贴授权凭据，例如：\n{"token":"...","userid":"700121683"}\n或直接粘贴 Token 字符串'}
+                  rows={4}
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-[11px] text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50 font-mono resize-none"
                 />
                 {manualAuthMsg && <p className="text-[10px] text-red-400">{manualAuthMsg}</p>}
                 <button
