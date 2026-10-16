@@ -80,6 +80,88 @@ export async function saveUserSettings(settings: Partial<UserSettings>): Promise
 }
 
 /**
+ * 拉取酷狗用户资料（昵称/头像）
+ * 走 usercenter /v3/get_my_info，p 参数为 RSA_NO_PADDING 加密（前端用 BigInt 实现）
+ */
+const RSA_MODULUS = 0xC8006ED03842D2628209BD314984CA5ED6CFE06E30C95F9D4704D9C49791D7A935BA950ECB0BC8EBF5F5994F0BAC927A7EB151B3C1DE343303FA539C83136ECCFD7D7E511E2DBCE18EAA9F784C9B50D443E75865979E0A5E216E46C684066A8D6B998580BBAA22D73F5790286BB14742E83244E44DB6D707FFE162C5C7002D45n;
+const RSA_EXPONENT = 65537n;
+
+function rsaNoPaddingHex(data: string): string {
+  const bytes = new TextEncoder().encode(data);
+  const padded = new Uint8Array(128);
+  padded.set(bytes.slice(0, 128));
+  const m = BigInt('0x' + Array.from(padded).map((b) => b.toString(16).padStart(2, '0')).join(''));
+  // 模幂运算（e=65537，17 次平方乘法，耗时忽略不计）
+  let result = 1n;
+  let base = m % RSA_MODULUS;
+  let exp = RSA_EXPONENT;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base) % RSA_MODULUS;
+    base = (base * base) % RSA_MODULUS;
+    exp >>= 1n;
+  }
+  return result.toString(16).toUpperCase().padStart(256, '0');
+}
+
+export async function fetchUserProfile(
+  token: string,
+  userid: string
+): Promise<{ nickname: string; avatar: string } | null> {
+  if (!token || !userid) return null;
+
+  try {
+    const mid = await getDeviceMid();
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      dfid: '-',
+      mid,
+      uuid: '-',
+      appid: 1005,
+      clientver: 20489,
+      userid: Number(userid),
+      clienttime: timestamp,
+      token,
+      plat: 1,
+    };
+    const body = {
+      visit_time: timestamp,
+      usertype: 1,
+      p: rsaNoPaddingHex(JSON.stringify({ token, clienttime: timestamp })),
+      userid: Number(userid),
+    };
+    const bodyStr = JSON.stringify(body);
+    const signature = signGatewayParams(params, bodyStr);
+    params.signature = signature;
+
+    const res = await httpPost<{
+      status: number;
+      data?: { nickname?: string; pic?: string };
+    }>('https://gateway.kugou.com/v3/get_my_info', body, {
+      query: params,
+      headers: {
+        'User-Agent': KUGOU_GATEWAY_UA,
+        Cookie: `token=${token}; userid=${userid}; dfid=-`,
+        dfid: '-',
+        clienttime: String(timestamp),
+        mid,
+        'x-router': 'usercenter.kugou.com',
+      },
+    });
+
+    if (res?.status === 1 && res.data?.nickname) {
+      return {
+        nickname: res.data.nickname,
+        avatar: (res.data.pic || '').replace(/^http:\/\//, 'https://'),
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn('[fetchUserProfile] 拉取用户资料失败:', err);
+    return null;
+  }
+}
+
+/**
  * 查询概念版 VIP 实时状态（kugouvip 网关，与签到查询同接口）
  * 从 busi_vip 数组中取 busi_type === 'concept' 的条目判断是否有效会员
  */

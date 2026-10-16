@@ -39,8 +39,10 @@ function formatSeconds(secs: number): string {
 }
 
 export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings }) => {
-  const { activePlaylist, currentSong, isPlaying, playSong } = usePlayer();
+  const { playlists, activePlaylist, selectPlaylist, currentSong, isPlaying, playSong } = usePlayer();
   const [searchQuery, setSearchQuery] = useState('');
+  // 移动端歌单切换抽屉（无侧边栏，需要入口切换歌单）
+  const [isPlaylistDrawerOpen, setIsPlaylistDrawerOpen] = useState(false);
 
   // 全网搜索状态
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
@@ -105,15 +107,21 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-950/40 relative">
       {/* 移动端顶部状态条（小屏可见） */}
       <div className="lg:hidden flex items-center justify-between px-4 py-3 bg-zinc-900/60 backdrop-blur-xl border-b border-white/10 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center">
+        <button
+          onClick={() => setIsPlaylistDrawerOpen(true)}
+          className="flex items-center gap-2 min-w-0 text-left"
+        >
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shrink-0">
             <Sparkles className="w-4 h-4 text-white" />
           </div>
-          <h1 className="font-bold text-sm bg-gradient-to-r from-white to-zinc-300 bg-clip-text text-transparent">
-            酷狗播放器
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="font-bold text-xs text-zinc-400 leading-tight">酷狗播放器</h1>
+            <p className="text-xs font-semibold text-white truncate leading-tight">
+              {activePlaylist?.name || '选择歌单'}
+            </p>
+          </div>
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onOpenImport}
             className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
@@ -286,8 +294,8 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                           {formatSeconds(song.duration)}
                         </div>
 
-                        {/* 操作区：播放与加入歌单 */}
-                        <div className="flex items-center justify-end gap-1.5 shrink-0">
+                        {/* 操作区：播放与加入歌单（移动端隐藏，点整行播放） */}
+                        <div className="hidden sm:flex items-center justify-end gap-1.5 shrink-0">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -514,8 +522,8 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                           {formatSeconds(song.duration)}
                         </div>
 
-                        {/* 操作区 */}
-                        <div className="flex items-center justify-end gap-1.5 shrink-0">
+                        {/* 操作区（移动端隐藏，点整行播放） */}
+                        <div className="hidden sm:flex items-center justify-end gap-1.5 shrink-0">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -537,6 +545,62 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
           </>
         )}
       </div>
+
+      {/* 移动端歌单切换抽屉 */}
+      {isPlaylistDrawerOpen && (
+        <div className="lg:hidden fixed inset-0 z-40" onClick={() => setIsPlaylistDrawerOpen(false)}>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-0 top-0 bottom-0 w-72 max-w-[80vw] bg-zinc-900 border-r border-white/10 shadow-2xl flex flex-col animate-in slide-in-from-left duration-200"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+              <span className="text-sm font-bold text-white">我的歌单</span>
+              <button
+                onClick={() => setIsPlaylistDrawerOpen(false)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+              {playlists.length === 0 ? (
+                <p className="text-xs text-zinc-500 text-center py-8">暂无歌单，请先导入</p>
+              ) : (
+                playlists.map((p) => {
+                  const isActive = activePlaylist?.id === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        void selectPlaylist(p);
+                        setIsPlaylistDrawerOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-colors ${
+                        isActive ? 'bg-cyan-500/15 text-cyan-300' : 'hover:bg-white/5 text-zinc-300'
+                      }`}
+                    >
+                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-zinc-800 shrink-0 border border-white/5">
+                        {p.coverUrl ? (
+                          <img src={p.coverUrl} alt={p.name} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-zinc-600">
+                            <Music2 className="w-4 h-4" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium truncate">{p.name}</p>
+                        <p className="text-[10px] text-zinc-500 mt-0.5">{p.totalSongs} 首</p>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 添加到歌单弹窗 */}
       <AddToPlaylistModal

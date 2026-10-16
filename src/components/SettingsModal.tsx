@@ -16,7 +16,7 @@ import {
   User,
   X,
 } from 'lucide-react';
-import { checkinConceptVip, getUserSettings, saveUserSettings } from '../services/audioSource';
+import { checkinConceptVip, fetchUserProfile, getUserSettings, saveUserSettings } from '../services/audioSource';
 import { checkLoginQrCode, createLoginQrCode } from '../services/kugouAuth';
 import { usePlayer } from '../context/PlayerContext';
 import type { UserSettings } from '../types/music';
@@ -230,10 +230,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       return;
     }
     try {
+      // 先拉取真实昵称/头像，失败也照常登录（显示占位昵称）
+      const profile = await fetchUserProfile(token, userid);
       const updated = await saveUserSettings({
         kugouToken: token,
         kugouUserId: userid,
-        nickname: settings.nickname || '酷狗用户',
+        nickname: profile?.nickname || '酷狗用户',
+        avatar: profile?.avatar || '',
       });
       setSettings(updated);
       setManualAuthMsg(null);
@@ -374,8 +377,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                       </span>
                     )}
                   </h3>
-                  <p className="text-xs text-zinc-400 font-mono mt-0.5 flex items-center gap-2">
-                    <span>UID: {settings.kugouUserId}</span>
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5 flex items-center gap-2 flex-wrap">
+                    <span className="whitespace-nowrap">UID: {settings.kugouUserId}</span>
                     <button
                       onClick={() => {
                         navigator.clipboard
@@ -383,7 +386,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                           .then(() => setCheckinMessage('已复制授权凭据，可在手机端「手动授权」中粘贴登录'));
                       }}
                       title="复制授权凭据（用于手机端手动授权）"
-                      className="text-[10px] not-italic font-sans px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white transition-colors"
+                      className="text-[10px] not-italic font-sans px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
                     >
                       复制凭据
                     </button>
