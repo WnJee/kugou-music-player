@@ -1,0 +1,125 @@
+name: Release
+
+# 推送 v* 标签时自动触发，例如: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # 先创建 GitHub Release，供各平台并行上传产物
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" 2>/dev/null || \
+          gh release create "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" \
+            --title "KuGouPlayer ${{ github.ref_name }}" --generate-notes
+
+  # 桌面端: macOS (universal) + Windows
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: windows-latest
+            args: ''
+            targets: ''
+    needs: create-release
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload desktop bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'KuGouPlayer ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  # 安卓: Debug 签名 APK（arm64 + armv7）
+  android:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Android NDK env
+        run: echo "NDK_HOME=$(ls -d ${ANDROID_HOME}/ndk/* | head -1)" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Android APK (debug signed)
+        run: npx tauri android build --apk --debug --target aarch64 --target armv7
+
+      - name: Upload APKs to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd src-tauri/gen/android/app/build/outputs/apk
+          for f in aarch64/debug/*.apk armv7/debug/*.apk; do
+            abi=$(echo "$f" | cut -d/ -f1)
+            case "$abi" in
+              aarch64) out="KuGouPlayer-${{ github.ref_name }}-android-arm64.apk" ;;
+              armv7)   out="KuGouPlayer-${{ github.ref_name }}-android-armv7.apk" ;;
+            esac
+            cp "$f" "/tmp/$out"
+          done
+          gh release upload "${{ github.ref_name }}" /tmp/KuGouPlayer-*.apk --clobber --repo "$GITHUB_REPOSITORY"
