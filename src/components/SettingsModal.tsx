@@ -267,7 +267,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           </div>
           <div>
             <h2 className="text-base font-bold">酷狗账号扫码授权</h2>
-            <p className="text-xs text-zinc-400">免手动抓包输入，手机扫一扫即可绑定</p>
+            <p className="text-xs text-zinc-400">手机扫一扫即可绑定</p>
           </div>
         </div>
 

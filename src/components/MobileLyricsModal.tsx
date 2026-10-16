@@ -3,11 +3,12 @@
  * 点击移动端底部 Mini 播放条弹出全屏沉浸式页面
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ChevronDown,
   Disc3,
   FastForward,
+  ListMusic,
   Pause,
   Play,
   Repeat,
@@ -51,7 +52,12 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
     lyrics,
     activeLyricIndex,
     audioSourceInfo,
+    activePlaylist,
+    playSong,
   } = usePlayer();
+
+  // 播放列表面板（与桌面版队列功能对齐）
+  const [isQueueOpen, setIsQueueOpen] = useState(false);
 
   if (!isOpen || !currentSong) return null;
 
@@ -75,7 +81,13 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
           </span>
         </div>
 
-        <div className="w-6" />
+        <button
+          onClick={() => setIsQueueOpen((v) => !v)}
+          title="播放列表"
+          className={`p-2 rounded-full transition-colors ${isQueueOpen ? 'text-cyan-400 bg-white/10' : 'text-zinc-400 hover:bg-white/10'}`}
+        >
+          <ListMusic className="w-6 h-6" />
+        </button>
       </div>
 
       {/* 中部旋转黑胶与歌词 */}
@@ -192,6 +204,69 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
           </button>
         </div>
       </div>
+
+      {/* 播放列表面板（底部抽屉） */}
+      {isQueueOpen && (
+        <div className="fixed inset-0 z-60" onClick={() => setIsQueueOpen(false)}>
+          <div className="absolute inset-0 bg-black/50" />
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-0 right-0 bottom-0 max-h-[65vh] bg-zinc-900 border-t border-white/10 rounded-t-2xl flex flex-col animate-in slide-in-from-bottom duration-200 pb-[env(safe-area-inset-bottom)]"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <ListMusic className="w-4 h-4 text-cyan-400 shrink-0" />
+                <h3 className="text-sm font-bold text-white truncate">
+                  {activePlaylist ? activePlaylist.name : '播放列表'}
+                </h3>
+                <span className="text-[11px] text-zinc-500 shrink-0">
+                  {activePlaylist?.songs.length || 0} 首
+                </span>
+              </div>
+              <button
+                onClick={() => setIsQueueOpen(false)}
+                className="text-zinc-500 hover:text-white text-xs shrink-0 p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {!activePlaylist || activePlaylist.songs.length === 0 ? (
+                <div className="py-10 text-center text-xs text-zinc-500">播放列表为空</div>
+              ) : (
+                activePlaylist.songs.map((song, idx) => {
+                  const isCur = currentSong?.hash === song.hash;
+                  return (
+                    <div
+                      key={`${song.hash}-${idx}`}
+                      onClick={() => playSong(song)}
+                      className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors ${
+                        isCur
+                          ? 'bg-cyan-500/10 text-cyan-300'
+                          : 'text-zinc-400 active:bg-white/[0.06]'
+                      }`}
+                    >
+                      <span className="w-5 text-[11px] font-mono tabular-nums text-zinc-600 shrink-0 text-right">
+                        {isCur && isPlaying ? '♪' : idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <h4 className={`text-xs truncate ${isCur ? 'text-cyan-400 font-semibold' : ''}`}>
+                          {song.songName}
+                        </h4>
+                        <p className="text-[10px] text-zinc-500 truncate">{song.singerName}</p>
+                      </div>
+                      <span className="text-[10px] font-mono text-zinc-600 shrink-0 tabular-nums">
+                        {formatTime(song.duration)}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
