@@ -48,6 +48,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
   // 退出登录二次确认（Tauri WebView 不支持原生 window.confirm，改用内联确认）
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  // 手机端手动授权（手机无法扫描自己屏幕上的二维码）
+  const [showManualAuth, setShowManualAuth] = useState(false);
+  const [manualToken, setManualToken] = useState('');
+  const [manualUserid, setManualUserid] = useState('');
+  const [manualAuthMsg, setManualAuthMsg] = useState<string | null>(null);
 
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   // 防风控：扫码轮询次数上限（150 次 × 2s ≈ 5 分钟，正常二维码在此之前就会过期）
@@ -189,6 +194,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     }
   };
 
+  // 手机端手动授权：直接粘贴 Token 与 UserID 完成绑定（支持粘贴「复制凭据」的 JSON）
+  const handleManualAuth = async () => {
+    let token = manualToken.trim();
+    const rawUserid = manualUserid.trim();
+    let userid = rawUserid;
+
+    // 兼容粘贴 {"token":"...","userid":"..."} 格式
+    if (token.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(token);
+        token = String(parsed.token || '');
+        if (!userid) userid = String(parsed.userid || '');
+      } catch {
+        setManualAuthMsg('粘贴内容不是有效的凭据 JSON');
+        return;
+      }
+    }
+    if (!token || !userid) {
+      setManualAuthMsg('请填写 Token 和 UserID');
+      return;
+    }
+    try {
+      const updated = await saveUserSettings({
+        kugouToken: token,
+        kugouUserId: userid,
+        nickname: settings.nickname || '酷狗用户',
+      });
+      setSettings(updated);
+      setManualAuthMsg(null);
+      setShowManualAuth(false);
+      await refreshUserSettings();
+      await syncCloudPlaylists(true);
+      refreshVipStatus();
+    } catch (err) {
+      setManualAuthMsg(err instanceof Error ? err.message : '保存失败，请重试');
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in select-none">
       <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-white/10 p-6 shadow-2xl text-white relative max-h-[92vh] overflow-y-auto custom-scrollbar">
@@ -247,6 +290,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               <RefreshCw className={`w-3.5 h-3.5 ${isQrLoading ? 'animate-spin' : ''}`} />
               <span>刷新二维码</span>
             </button>
+
+            {/* 手机端无法扫描自己屏幕上的二维码：提供手动授权 */}
+            <button
+              onClick={() => setShowManualAuth((v) => !v)}
+              className="mt-2 text-[11px] text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4"
+            >
+              在手机上？点此手动授权 →
+            </button>
+
+            {showManualAuth && (
+              <div className="mt-3 w-full text-left p-3 rounded-xl bg-black/30 border border-white/10 space-y-2">
+                <p className="text-[10px] text-zinc-400 leading-relaxed">
+                  方式一：长按上方二维码可保存/分享给其他设备扫码；<br />
+                  方式二：在电脑版登录后，把 Token 和 UID 粘贴到这里（电脑版设置弹窗可查看）。
+                </p>
+                <input
+                  value={manualToken}
+                  onChange={(e) => setManualToken(e.target.value)}
+                  placeholder="粘贴 Token"
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-[11px] text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                />
+                <input
+                  value={manualUserid}
+                  onChange={(e) => setManualUserid(e.target.value)}
+                  placeholder="粘贴 UserID（纯数字）"
+                  inputMode="numeric"
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-[11px] text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                />
+                {manualAuthMsg && <p className="text-[10px] text-red-400">{manualAuthMsg}</p>}
+                <button
+                  onClick={handleManualAuth}
+                  className="w-full py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-white text-xs font-medium transition-colors"
+                >
+                  保存并登录
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           /* 2. 若已登录：显示用户信息卡片与打卡面板 */
@@ -286,8 +366,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                       </span>
                     )}
                   </h3>
-                  <p className="text-xs text-zinc-400 font-mono mt-0.5">
-                    UID: {settings.kugouUserId}
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5 flex items-center gap-2">
+                    <span>UID: {settings.kugouUserId}</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard
+                          .writeText(JSON.stringify({ token: settings.kugouToken, userid: settings.kugouUserId }))
+                          .then(() => setCheckinMessage('已复制授权凭据，可在手机端「手动授权」中粘贴登录'));
+                      }}
+                      title="复制授权凭据（用于手机端手动授权）"
+                      className="text-[10px] not-italic font-sans px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/15 text-zinc-300 hover:text-white transition-colors"
+                    >
+                      复制凭据
+                    </button>
                   </p>
                 </div>
               </div>

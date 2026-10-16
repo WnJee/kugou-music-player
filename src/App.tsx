@@ -17,7 +17,7 @@ const AppContent: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-gradient-to-br from-zinc-950 via-zinc-900 to-black text-zinc-100 select-none relative">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-gradient-to-br from-zinc-950 via-zinc-900 to-black text-zinc-100 select-none relative pt-[env(safe-area-inset-top)]">
       {/* 背景动态毛玻璃氛围晕光 */}
       <div className="absolute -top-32 -left-32 w-96 h-96 bg-cyan-600/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute top-1/3 -right-32 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />

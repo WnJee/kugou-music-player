@@ -58,7 +58,7 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950/95 backdrop-blur-3xl text-white select-none animate-in fade-in slide-in-from-bottom duration-200">
       {/* 顶部收起栏 */}
-      <div className="flex items-center justify-between px-5 pt-4 pb-2 shrink-0">
+      <div className="flex items-center justify-between px-5 pt-[calc(1rem+env(safe-area-inset-top))] pb-2 shrink-0">
         <button
           onClick={onClose}
           className="p-2 -ml-2 rounded-full hover:bg-white/10 active:scale-95 transition-transform"
