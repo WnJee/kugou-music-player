@@ -3,7 +3,7 @@
  * 适配平板横屏与桌面端，提供歌单切换、导入与扫码登录入口，并区分自建云端歌单与本地导入歌单
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Disc3,
   FolderPlus,
@@ -97,9 +97,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
     currentSong,
     isPlaying,
     userSettings,
+    vipStatus,
     isSyncingCloud,
     syncCloudPlaylists,
+    cloudSyncError,
   } = usePlayer();
+
+  // 待确认删除的歌单 ID（Tauri WebView 不支持原生 window.confirm，改用内联确认）
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   // 区分酷狗账号自建/收藏歌单 与 本地额外导入歌单
   const userOwnedPlaylists = playlists.filter((p) => p.isUserOwned);
@@ -148,6 +153,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
                 <User className="w-4 h-4 text-emerald-400 shrink-0" />
               )}
               <span className="truncate">{userSettings.nickname || '已授权'}</span>
+              {vipStatus?.isVip && (
+                <span
+                  title={vipStatus.vipEndTime ? `概念版 VIP 到期：${vipStatus.vipEndTime}` : '概念版 VIP 生效中'}
+                  className="shrink-0 px-1 py-px rounded text-[8px] font-bold text-amber-300 bg-amber-500/20 border border-amber-500/40"
+                >
+                  VIP
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -168,7 +181,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
             </span>
             {userSettings?.kugouToken && (
               <button
-                onClick={() => syncCloudPlaylists()}
+                onClick={() => syncCloudPlaylists(true)}
                 disabled={isSyncingCloud}
                 title="重新同步云端歌单"
                 className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-cyan-400 transition-colors"
@@ -189,7 +202,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
             </div>
           ) : userOwnedPlaylists.length === 0 ? (
             <div className="p-3 text-center text-xs text-zinc-500">
-              {isSyncingCloud ? '正在同步账号歌单...' : '暂无云端歌单，可点击上方刷新同步'}
+              {isSyncingCloud ? (
+                '正在同步账号歌单...'
+              ) : cloudSyncError ? (
+                <span className="text-amber-400/90 leading-relaxed">同步失败：{cloudSyncError}</span>
+              ) : (
+                '暂无云端歌单，可点击上方刷新同步'
+              )}
             </div>
           ) : (
             <div className="space-y-1">
@@ -224,20 +243,44 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
             </div>
           ) : (
             <div className="space-y-1">
-              {importedPlaylists.map((playlist) => (
-                <PlaylistItem
-                  key={playlist.id}
-                  playlist={playlist}
-                  isActive={activePlaylist?.id === playlist.id}
-                  isPlayingSong={Boolean(currentSong && isPlaying)}
-                  onSelect={() => selectPlaylist(playlist)}
-                  onDelete={() => {
-                    if (confirm(`确定要移除歌单《${playlist.name}》吗？`)) {
-                      deletePlaylistById(playlist.id);
-                    }
-                  }}
-                />
-              ))}
+              {importedPlaylists.map((playlist) =>
+                pendingDeleteId === playlist.id ? (
+                  <div
+                    key={playlist.id}
+                    className="p-2 rounded-xl bg-red-500/10 border border-red-500/25 space-y-2"
+                  >
+                    <p className="text-[11px] text-red-200 leading-relaxed px-1">
+                      移除歌单《{playlist.name}》？
+                    </p>
+                    <div className="flex items-center gap-1.5 px-1">
+                      <button
+                        onClick={() => setPendingDeleteId(null)}
+                        className="flex-1 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-[11px] transition-colors"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={() => {
+                          setPendingDeleteId(null);
+                          deletePlaylistById(playlist.id);
+                        }}
+                        className="flex-1 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-300 text-[11px] font-medium transition-colors"
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <PlaylistItem
+                    key={playlist.id}
+                    playlist={playlist}
+                    isActive={activePlaylist?.id === playlist.id}
+                    isPlayingSong={Boolean(currentSong && isPlaying)}
+                    onSelect={() => selectPlaylist(playlist)}
+                    onDelete={() => setPendingDeleteId(playlist.id)}
+                  />
+                )
+              )}
             </div>
           )}
         </div>

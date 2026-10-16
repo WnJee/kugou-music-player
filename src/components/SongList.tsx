@@ -3,7 +3,7 @@
  * 适配移动端及平板/桌面端，支持酷狗全网歌曲/歌手搜索、即时播放、以及加入歌单并同步云端
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   Clock,
@@ -80,14 +80,26 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
   // 歌单内搜索过滤
   const filteredPlaylistSongs = useMemo(() => {
     if (!activePlaylist?.songs) return [];
-    if (!searchQuery.trim()) return activePlaylist.songs;
+    // 倒序展示：最新添加的排在前面
+    const reversed = [...activePlaylist.songs].reverse();
+    if (!searchQuery.trim()) return reversed;
     const query = searchQuery.toLowerCase().trim();
-    return activePlaylist.songs.filter(
+    return reversed.filter(
       (s) =>
         s.songName.toLowerCase().includes(query) ||
         s.singerName.toLowerCase().includes(query)
     );
   }, [activePlaylist, searchQuery]);
+
+  // 正在播放的歌曲自动滚动到可见区域
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!currentSong) return;
+    const el = listContainerRef.current?.querySelector(
+      `[data-song-hash="${currentSong.hash}"]`
+    );
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [currentSong]);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-950/40 relative">
@@ -161,7 +173,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
       </div>
 
       {/* 主展示滚动容器 */}
-      <div className="flex-1 overflow-y-auto px-4 md:px-8 pb-8 pt-2 space-y-6 custom-scrollbar">
+      <div ref={listContainerRef} className="flex-1 overflow-y-auto px-4 md:px-8 pb-8 pt-2 space-y-6 custom-scrollbar">
         {/* 模式 A：全网搜索结果视图 */}
         {isGlobalSearching ? (
           <div className="space-y-4">
@@ -186,12 +198,12 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
 
             {/* 搜索结果表格 */}
             <div className="rounded-2xl border border-white/5 bg-white/[0.01] overflow-hidden">
-              <div className="hidden sm:grid grid-cols-12 gap-4 px-4 py-2.5 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
-                <div className="col-span-1 text-center">#</div>
-                <div className="col-span-5">歌曲标题</div>
-                <div className="col-span-3">歌手</div>
-                <div className="col-span-1 text-center">时长</div>
-                <div className="col-span-2 text-right pr-2">操作</div>
+              <div className="hidden sm:grid grid-cols-[52px_minmax(96px,1fr)_64px_88px] xl:grid-cols-[52px_minmax(120px,1fr)_150px_64px_96px] gap-3 px-4 py-2.5 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
+                <div className="text-center">#</div>
+                <div className="whitespace-nowrap">歌曲标题</div>
+                <div className="hidden xl:block whitespace-nowrap">歌手</div>
+                <div className="text-center whitespace-nowrap">时长</div>
+                <div className="text-right pr-2 whitespace-nowrap">操作</div>
               </div>
 
               {isSearchLoading ? (
@@ -211,15 +223,16 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                     return (
                       <div
                         key={`${song.hash}-${index}`}
-                        onDoubleClick={() => playSong(song)}
-                        className={`group relative flex sm:grid sm:grid-cols-12 items-center gap-3 sm:gap-4 px-3 sm:px-4 py-2.5 sm:py-3 transition-colors cursor-pointer ${
+                        data-song-hash={song.hash}
+                        onClick={() => playSong(song)}
+                        className={`group relative grid grid-cols-[40px_minmax(0,1fr)] sm:grid-cols-[52px_minmax(96px,1fr)_64px_88px] xl:grid-cols-[52px_minmax(120px,1fr)_150px_64px_96px] items-center gap-3 px-3 sm:px-4 py-2.5 transition-colors cursor-pointer ${
                           isCurrent
                             ? 'bg-cyan-500/10 text-cyan-300'
                             : 'hover:bg-white/[0.04] text-zinc-300 hover:text-white'
                         }`}
                       >
                         {/* 序号与播放 */}
-                        <div className="sm:col-span-1 flex items-center justify-center shrink-0 w-8 sm:w-auto">
+                        <div className="flex items-center justify-center w-10 sm:w-[52px] h-6 shrink-0">
                           {isCurrent && isPlaying ? (
                             <Volume2 className="w-4 h-4 text-cyan-400 animate-bounce" />
                           ) : (
@@ -236,7 +249,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                         </div>
 
                         {/* 封面与歌名 */}
-                        <div className="sm:col-span-5 flex items-center gap-3 min-w-0 flex-1">
+                        <div className="flex items-center gap-3 min-w-0">
                           {song.coverUrl ? (
                             <img
                               src={song.coverUrl}
@@ -264,17 +277,17 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                         </div>
 
                         {/* 歌手 */}
-                        <div className="hidden sm:block sm:col-span-3 text-xs text-zinc-400 truncate">
+                        <div className="hidden xl:block text-xs text-zinc-400 truncate">
                           {song.singerName}
                         </div>
 
                         {/* 时长 */}
-                        <div className="hidden sm:block sm:col-span-1 text-center text-xs text-zinc-500 font-mono">
+                        <div className="hidden sm:block text-center text-xs text-zinc-500 font-mono">
                           {formatSeconds(song.duration)}
                         </div>
 
                         {/* 操作区：播放与加入歌单 */}
-                        <div className="sm:col-span-2 flex items-center justify-end gap-1.5 shrink-0">
+                        <div className="flex items-center justify-end gap-1.5 shrink-0">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -291,7 +304,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                               setSelectedSongForAdd(song);
                             }}
                             title="加入歌单并同步"
-                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/15 text-zinc-400 hover:text-cyan-400 transition-colors flex items-center gap-1 text-xs"
+                            className="whitespace-nowrap p-1.5 rounded-lg bg-white/5 hover:bg-white/15 text-zinc-400 hover:text-cyan-400 transition-colors flex items-center gap-1 text-xs"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             <span className="hidden lg:inline text-[11px]">加入歌单</span>
@@ -382,7 +395,9 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                 {activePlaylist.songs.length > 0 && (
                   <div className="mt-4 flex items-center gap-3">
                     <button
-                      onClick={() => playSong(activePlaylist.songs[0])}
+                      onClick={() =>
+                        playSong(activePlaylist.songs[activePlaylist.songs.length - 1])
+                      }
                       className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-xs shadow-lg shadow-cyan-500/20 active:scale-95 transition-all"
                     >
                       <Play className="w-3.5 h-3.5 fill-white" />
@@ -412,12 +427,12 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
 
             {/* 歌曲表格 */}
             <div className="rounded-2xl border border-white/5 bg-white/[0.01] overflow-hidden">
-              <div className="hidden sm:grid grid-cols-12 gap-4 px-4 py-2.5 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
-                <div className="col-span-1 text-center">#</div>
-                <div className="col-span-5">歌曲标题</div>
-                <div className="col-span-3">歌手</div>
-                <div className="col-span-1 text-center">时长</div>
-                <div className="col-span-2 text-right pr-2">操作</div>
+              <div className="hidden sm:grid grid-cols-[52px_minmax(96px,1fr)_64px_88px] xl:grid-cols-[52px_minmax(120px,1fr)_150px_64px_96px] gap-3 px-4 py-2.5 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
+                <div className="text-center">#</div>
+                <div className="whitespace-nowrap">歌曲标题</div>
+                <div className="hidden xl:block whitespace-nowrap">歌手</div>
+                <div className="text-center whitespace-nowrap">时长</div>
+                <div className="text-right pr-2 whitespace-nowrap">操作</div>
               </div>
 
               <div className="divide-y divide-white/[0.03]">
@@ -432,32 +447,42 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                     return (
                       <div
                         key={`${song.hash}-${index}`}
-                        onDoubleClick={() => playSong(song)}
-                        className={`group relative flex sm:grid sm:grid-cols-12 items-center gap-3 sm:gap-4 px-3 sm:px-4 py-2.5 sm:py-3 transition-colors cursor-pointer ${
+                        data-song-hash={song.hash}
+                        onClick={() => playSong(song)}
+                        className={`group relative grid grid-cols-[40px_minmax(0,1fr)] sm:grid-cols-[52px_minmax(96px,1fr)_64px_88px] xl:grid-cols-[52px_minmax(120px,1fr)_150px_64px_96px] items-center gap-3 px-3 sm:px-4 py-2.5 transition-colors cursor-pointer ${
                           isCurrent
                             ? 'bg-cyan-500/10 text-cyan-300'
                             : 'hover:bg-white/[0.04] text-zinc-300 hover:text-white'
                         }`}
                       >
-                        {/* 序号与播放 */}
-                        <div className="sm:col-span-1 flex items-center justify-center shrink-0 w-8 sm:w-auto">
+                        {/* 序号 / 播放按钮（悬停显示，标准播放器交互） */}
+                        <div className="flex items-center justify-center w-10 sm:w-[52px] h-6">
                           {isCurrent && isPlaying ? (
-                            <Volume2 className="w-4 h-4 text-cyan-400 animate-bounce" />
+                            <div className="flex items-end gap-[2px] h-3.5" aria-label="正在播放">
+                              <span className="w-[3px] h-2 bg-cyan-400 rounded-sm animate-pulse" />
+                              <span className="w-[3px] h-3.5 bg-cyan-400 rounded-sm animate-pulse [animation-delay:150ms]" />
+                              <span className="w-[3px] h-2.5 bg-cyan-400 rounded-sm animate-pulse [animation-delay:300ms]" />
+                            </div>
                           ) : (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                playSong(song);
-                              }}
-                              className="w-7 h-7 sm:w-6 sm:h-6 rounded-full bg-white/10 group-hover:bg-cyan-500 text-zinc-300 group-hover:text-white flex items-center justify-center transition-all"
-                            >
-                              <Play className="w-3 h-3 fill-current ml-0.5" />
-                            </button>
+                            <>
+                              <span className="text-xs text-zinc-500 font-mono group-hover:hidden tabular-nums">
+                                {index + 1}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  playSong(song);
+                                }}
+                                title="播放"
+                                className="hidden group-hover:flex w-6 h-6 rounded-full bg-cyan-500 text-white items-center justify-center transition-all"
+                              >
+                                <Play className="w-3 h-3 fill-current ml-0.5" />
+                              </button>
+                            </>
                           )}
                         </div>
-
                         {/* 封面与标题 */}
-                        <div className="sm:col-span-5 flex items-center gap-3 min-w-0 flex-1">
+                        <div className="flex items-center gap-3 min-w-0">
                           {song.coverUrl && (
                             <img
                               src={song.coverUrl}
@@ -481,17 +506,16 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                         </div>
 
                         {/* 歌手 */}
-                        <div className="hidden sm:block sm:col-span-3 text-xs text-zinc-400 truncate">
+                        <div className="hidden xl:block text-xs text-zinc-400 truncate">
                           {song.singerName}
                         </div>
-
                         {/* 时长 */}
-                        <div className="hidden sm:block sm:col-span-1 text-center text-xs text-zinc-500 font-mono">
+                        <div className="hidden sm:block text-center text-xs text-zinc-500 font-mono tabular-nums">
                           {formatSeconds(song.duration)}
                         </div>
 
                         {/* 操作区 */}
-                        <div className="sm:col-span-2 flex items-center justify-end gap-1.5 shrink-0">
+                        <div className="flex items-center justify-end gap-1.5 shrink-0">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();

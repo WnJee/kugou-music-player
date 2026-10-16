@@ -7,6 +7,7 @@ import { Store } from '@tauri-apps/plugin-store';
 import type { KuGouPlaylist, KuGouSong } from '../types/music';
 import { md5 } from '../utils/md5';
 import { httpGet, httpPost, KUGOU_GATEWAY_UA, request } from './http';
+import { getDeviceMid } from './device';
 
 // 酷狗移动端网关请求签名秘钥 (从 KuGou Android 逆向获取的验签 Salt)
 const KUGOU_API_SALT = 'OIlwieks28dk2k092lksi2UIkp';
@@ -14,6 +15,21 @@ const KUGOU_API_SALT = 'OIlwieks28dk2k092lksi2UIkp';
 // 本地存储文件名
 const STORE_FILENAME = 'kugou_playlists.json';
 const STORE_KEY = 'playlists';
+
+/**
+ * 酷狗网关错误码 → 用户可读提示
+ */
+const KUGOU_ERROR_HINTS: Record<number, string> = {
+  20006: '接口签名校验失败',
+  20010: '请求参数不合法',
+  20017: '登录态未被酷狗网关接受（Token 失效或与设备标识不匹配），请重新扫码授权',
+};
+
+function describeKuGouError(errorCode?: number, status?: number): string {
+  if (errorCode && KUGOU_ERROR_HINTS[errorCode]) return KUGOU_ERROR_HINTS[errorCode];
+  if (errorCode) return `酷狗网关返回错误码 ${errorCode}`;
+  return `酷狗网关响应异常 (status: ${status ?? 'unknown'})`;
+}
 
 let tauriStoreInstance: Store | null = null;
 
@@ -92,6 +108,16 @@ function formatCoverUrl(url?: string): string {
 }
 
 /**
+ * 常见音频扩展名：酷狗 filename 常带 .mp3/.flac 等后缀，
+ * 若不去除会污染歌名，进而影响全网搜索、备轨匹配与歌词查找
+ */
+const AUDIO_EXT_RE = /\.(mp3|flac|ape|wma|wav|m4a|aac|ogg|opus|alac|lossless)\s*$/i;
+
+function stripAudioExtension(name: string): string {
+  return name.replace(AUDIO_EXT_RE, '').trim();
+}
+
+/**
  * 统一清洗歌名与歌手名（处理 "歌手 - 歌名" 复合字符串）
  */
 function sanitizeSongInfo(
@@ -99,16 +125,17 @@ function sanitizeSongInfo(
   rawSongName?: string,
   rawSingerName?: string
 ): { songName: string; singerName: string } {
-  let songName = rawSongName?.trim() || '';
+  let songName = stripAudioExtension(rawSongName?.trim() || '');
   let singerName = rawSingerName?.trim() || '';
 
   if (filename && (!songName || !singerName)) {
-    const parts = filename.split('-');
+    const cleanFilename = stripAudioExtension(filename.trim());
+    const parts = cleanFilename.split('-');
     if (parts.length >= 2) {
       if (!singerName) singerName = parts[0].trim();
-      if (!songName) songName = parts.slice(1).join('-').trim();
+      if (!songName) songName = stripAudioExtension(parts.slice(1).join('-'));
     } else {
-      if (!songName) songName = filename.trim();
+      if (!songName) songName = cleanFilename;
     }
   }
 
@@ -205,11 +232,10 @@ async function resolveFromGlobalCollectionId(globalCollectionId: string): Promis
     return { embeddedSongs: [] };
   }
 
-  // 1. 提取有效正整数 specialId
+  // 1. 提取有效正整数 specialId（仅接受明确的 specialid 字段，
+  //    避免误匹配页面中 author_id / album_id 等无关数字）
   let specialId: string | undefined;
-  const idMatch =
-    html.match(/["']?special[iI]d["']?\s*:\s*["']?(\d+)["']?/) ||
-    html.match(/["']?id["']?\s*:\s*["']?(\d+)["']?/);
+  const idMatch = html.match(/["']?special_?id["']?\s*:\s*["']?(\d+)["']?/i);
   if (idMatch && Number(idMatch[1]) > 0) {
     specialId = idMatch[1];
   }
@@ -534,21 +560,26 @@ export async function savePlaylistToStorage(playlist: KuGouPlaylist): Promise<vo
  */
 export async function getLocalPlaylists(): Promise<KuGouPlaylist[]> {
   const store = await getStore();
+  let result: KuGouPlaylist[] = [];
+
   if (store) {
-    const val = await store.get<KuGouPlaylist[]>(STORE_KEY);
-    return val || [];
-  }
-  if (typeof localStorage !== 'undefined') {
+    result = (await store.get<KuGouPlaylist[]>(STORE_KEY)) || [];
+  } else if (typeof localStorage !== 'undefined') {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       try {
-        return JSON.parse(raw);
+        result = JSON.parse(raw);
       } catch {
-        return [];
+        result = [];
       }
     }
   }
-  return [];
+
+  // 兼容历史缓存：早期版本歌名带 .mp3 等后缀，读取时统一清洗
+  return result.map((p) => ({
+    ...p,
+    songs: (p.songs || []).map((s) => ({ ...s, songName: stripAudioExtension(s.songName || '') })),
+  }));
 }
 
 /**
@@ -685,7 +716,7 @@ export async function fetchUserCloudPlaylists(
   if (!token || !userid) return [];
 
   const timestamp = Math.floor(Date.now() / 1000);
-  const mid = '239526275778893399526700786998289824956';
+  const mid = await getDeviceMid();
 
   const params: Record<string, string | number> = {
     appid: 1005,
@@ -737,50 +768,50 @@ export async function fetchUserCloudPlaylists(
     };
   }
 
-  try {
-    const res = await httpPost<GetAllListResponse>(url, body, {
-      query: params,
-      headers: {
-        ...DEFAULT_GATEWAY_HEADERS,
-        clienttime: String(timestamp),
-        mid,
-        token,
-        userid,
-      },
-    });
+  const res = await httpPost<GetAllListResponse>(url, body, {
+    query: params,
+    headers: {
+      ...DEFAULT_GATEWAY_HEADERS,
+      clienttime: String(timestamp),
+      mid,
+      token,
+      userid,
+    },
+  });
 
-    const rawList = res?.data?.info || res?.data?.list || res?.data?.lists || [];
-    const result: KuGouPlaylist[] = [];
-
-    for (const item of rawList) {
-      const listId = String(item.listid || item.list_id || item.id || '');
-      if (!listId) continue;
-      const name = item.name || item.listname || item.title || `云端歌单 #${listId}`;
-      const coverUrl = formatCoverUrl(item.pic || item.picpath || item.cover);
-      const totalSongs = Number(item.count || item.songcount || item.total || 0);
-      const globalCollectionId =
-        item.global_collection_id || (item.gid ? `collection_3_${userid}_${listId}_0` : '');
-
-      result.push({
-        id: `cloud_${listId}`,
-        listId,
-        name,
-        coverUrl,
-        intro: '酷狗账号云端歌单',
-        totalSongs,
-        songs: [],
-        importedAt: Date.now(),
-        sourceType: 'user_cloud',
-        rawInput: globalCollectionId || `listid:${listId}`,
-        isUserOwned: true,
-      });
-    }
-
-    return result;
-  } catch (err) {
-    console.warn('[fetchUserCloudPlaylists] 拉取云端歌单列表失败:', err);
-    return [];
+  // 网关返回 status !== 1 时抛出真实错误，避免 UI 误显示为「暂无云端歌单」
+  if (!res || res.status !== 1) {
+    throw new Error(describeKuGouError(res?.error_code, res?.status));
   }
+
+  const rawList = res?.data?.info || res?.data?.list || res?.data?.lists || [];
+  const result: KuGouPlaylist[] = [];
+
+  for (const item of rawList) {
+    const listId = String(item.listid || item.list_id || item.id || '');
+    if (!listId) continue;
+    const name = item.name || item.listname || item.title || `云端歌单 #${listId}`;
+    const coverUrl = formatCoverUrl(item.pic || item.picpath || item.cover);
+    const totalSongs = Number(item.count || item.songcount || item.total || 0);
+    const globalCollectionId =
+      item.global_collection_id || (item.gid ? `collection_3_${userid}_${listId}_0` : '');
+
+    result.push({
+      id: `cloud_${listId}`,
+      listId,
+      name,
+      coverUrl,
+      intro: '酷狗账号云端歌单',
+      totalSongs,
+      songs: [],
+      importedAt: Date.now(),
+      sourceType: 'user_cloud',
+      rawInput: globalCollectionId || `listid:${listId}`,
+      isUserOwned: true,
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -791,77 +822,44 @@ export async function fetchUserCloudPlaylistTracks(
   token: string,
   userid: string
 ): Promise<KuGouSong[]> {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const mid = '239526275778893399526700786998289824956';
-
-  const params: Record<string, string | number> = {
-    appid: 1005,
-    clienttime: timestamp,
-    clientver: 20489,
-    dfid: '-',
-    mid,
-    plat: 1,
-    token,
-    userid: Number(userid),
-    uuid: '-',
-  };
-
-  const body = {
-    listid: Number(listId),
-    userid: Number(userid),
-    type: 0,
-    page: 1,
-    pagesize: 300,
-    area_code: 1,
-    allplatform: 1,
-    show_cover: 1,
-    token,
-  };
-
-  const signature = signKuGouAndroidBody(params, body);
-  params.signature = signature;
+  const mid = await getDeviceMid();
+  const PAGE_SIZE = 300;
+  // 防风控安全上限：最多 10 页（约 3000 首），远大于常规歌单规模
+  const MAX_PAGES = 10;
+  const PAGE_INTERVAL_MS = 400;
 
   const url = 'https://gateway.kugou.com/cloudlist.service/v4/get_list_all_file_v3';
+
+  interface TrackItem {
+    hash?: string;
+    FileHash?: string;
+    name?: string;
+    filename?: string;
+    songname?: string;
+    singername?: string;
+    singer?: string;
+    album_id?: string | number;
+    albumid?: string | number;
+    timelen?: number;
+    duration?: number;
+    album_s_img?: string;
+    pic?: string;
+    sqhash?: string;
+    mixsongid?: string | number;
+    audioid?: string | number;
+  }
+
   interface TrackListResponse {
     status: number;
     error_code?: number;
     data?: {
-      info?: Array<{
-        hash?: string;
-        FileHash?: string;
-        name?: string;
-        filename?: string;
-        songname?: string;
-        singername?: string;
-        singer?: string;
-        album_id?: string | number;
-        albumid?: string | number;
-        timelen?: number;
-        duration?: number;
-        album_s_img?: string;
-        pic?: string;
-        sqhash?: string;
-        mixsongid?: string | number;
-        audioid?: string | number;
-      }>;
-      songs?: Array<any>;
+      info?: TrackItem[];
+      songs?: TrackItem[];
     };
   }
 
-  try {
-    const res = await httpPost<TrackListResponse>(url, body, {
-      query: params,
-      headers: {
-        ...DEFAULT_GATEWAY_HEADERS,
-        clienttime: String(timestamp),
-        mid,
-        token,
-        userid,
-      },
-    });
-
-    const rawSongs = res?.data?.info || res?.data?.songs || [];
-    return rawSongs
+  const mapSongs = (rawList: TrackItem[]): KuGouSong[] =>
+    rawList
       .map((item) => {
         const { songName, singerName } = sanitizeSongInfo(
           item.filename || item.name,
@@ -883,10 +881,92 @@ export async function fetchUserCloudPlaylistTracks(
         };
       })
       .filter((s) => Boolean(s.hash));
+
+  // 单页请求：clienttime 与签名必须按页重新计算
+  const fetchPage = async (page: number): Promise<TrackListResponse | null> => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      appid: 1005,
+      clienttime: timestamp,
+      clientver: 20489,
+      dfid: '-',
+      mid,
+      plat: 1,
+      token,
+      userid: Number(userid),
+      uuid: '-',
+    };
+
+    const body = {
+      listid: Number(listId),
+      userid: Number(userid),
+      type: 0,
+      page,
+      pagesize: PAGE_SIZE,
+      area_code: 1,
+      allplatform: 1,
+      show_cover: 1,
+      token,
+    };
+
+    const signature = signKuGouAndroidBody(params, body);
+    params.signature = signature;
+
+    return httpPost<TrackListResponse>(url, body, {
+      query: params,
+      headers: {
+        ...DEFAULT_GATEWAY_HEADERS,
+        clienttime: String(timestamp),
+        mid,
+        token,
+        userid,
+      },
+    });
+  };
+
+  const all: KuGouSong[] = [];
+
+
+  try {
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      // 单页失败自动重试（最多 3 次），避免翻页偶发失败导致整表被静默截断
+      let res: TrackListResponse | null = null;
+      let pageOk = false;
+      for (let attempt = 0; attempt < 3 && !pageOk; attempt++) {
+        try {
+          res = await fetchPage(page);
+          if (res && res.status === 1) {
+            pageOk = true;
+          } else {
+            console.warn(
+              `[fetchUserCloudPlaylistTracks] 第 ${page} 页响应异常 (status: ${res?.status}, error_code: ${res?.error_code})，重试 ${attempt + 1}/3`
+            );
+          }
+        } catch (pageErr) {
+          console.warn(`[fetchUserCloudPlaylistTracks] 第 ${page} 页请求异常，重试 ${attempt + 1}/3:`, pageErr);
+        }
+        if (!pageOk && attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 800));
+        }
+      }
+
+      const rawSongs = res?.data?.info || res?.data?.songs || [];
+      const mapped = mapSongs(rawSongs);
+      all.push(...mapped);
+
+      // 返回数量不足一页，说明已到末页
+      if (mapped.length < PAGE_SIZE) break;
+
+      // 页间留间隔，降低请求频率避免触发风控
+      if (page < MAX_PAGES) {
+        await new Promise((resolve) => setTimeout(resolve, PAGE_INTERVAL_MS));
+      }
+    }
   } catch (err) {
     console.warn(`[fetchUserCloudPlaylistTracks] 获取歌单曲目失败 (listId: ${listId}):`, err);
-    return [];
   }
+
+  return all;
 }
 
 /**
@@ -903,7 +983,7 @@ export async function addSongToUserCloudPlaylist(
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
-  const mid = '239526275778893399526700786998289824956';
+  const mid = await getDeviceMid();
 
   const params: Record<string, string | number> = {
     appid: 1005,

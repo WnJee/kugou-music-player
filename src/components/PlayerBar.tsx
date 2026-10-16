@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import {
   FastForward,
+  ListMusic,
   Music,
   Pause,
   Play,
@@ -27,6 +28,7 @@ function formatTime(secs: number): string {
 }
 
 export const PlayerBar: React.FC = () => {
+  const [isQueueOpen, setIsQueueOpen] = useState(false);
   const {
     currentSong,
     isPlaying,
@@ -43,6 +45,8 @@ export const PlayerBar: React.FC = () => {
     playMode,
     cyclePlayMode,
     audioSourceInfo,
+    activePlaylist,
+    playSong,
   } = usePlayer();
 
   const [isMobileModalOpen, setIsMobileModalOpen] = useState(false);
@@ -54,7 +58,7 @@ export const PlayerBar: React.FC = () => {
       {/* 1. 移动端悬浮 Mini 播放条 (< md 断点) */}
       <div
         onClick={() => setIsMobileModalOpen(true)}
-        className="md:hidden fixed bottom-3 left-3 right-3 z-30 flex items-center justify-between p-2.5 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 cursor-pointer active:scale-[0.99] transition-transform select-none"
+        className="md:hidden fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 right-3 z-30 flex items-center justify-between p-2.5 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 cursor-pointer active:scale-[0.99] transition-transform select-none"
       >
         <div className="flex items-center gap-3 min-w-0 flex-1 mr-3">
           <div className="relative w-10 h-10 rounded-xl overflow-hidden shrink-0 bg-zinc-800 border border-white/10">
@@ -218,8 +222,74 @@ export const PlayerBar: React.FC = () => {
             onChange={(e) => setVolume(Number(e.target.value))}
             className="w-20 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
           />
+          <button
+            onClick={() => setIsQueueOpen((v) => !v)}
+            title="播放列表"
+            className={`p-1.5 rounded-lg transition-colors ${
+              isQueueOpen ? 'bg-cyan-500/15 text-cyan-400' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <ListMusic className="w-4 h-4" />
+          </button>
         </div>
       </footer>
+
+      {/* 播放列表面板 */}
+      {isQueueOpen && (
+        <div className="hidden md:flex flex-col absolute right-4 bottom-24 w-96 max-h-[60vh] z-40 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <ListMusic className="w-4 h-4 text-cyan-400 shrink-0" />
+              <h3 className="text-xs font-bold text-white truncate">
+                {activePlaylist ? activePlaylist.name : '播放列表'}
+              </h3>
+              <span className="text-[11px] text-zinc-500 shrink-0">
+                {activePlaylist?.songs.length || 0} 首
+              </span>
+            </div>
+            <button
+              onClick={() => setIsQueueOpen(false)}
+              className="text-zinc-500 hover:text-white text-xs shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
+            {!activePlaylist || activePlaylist.songs.length === 0 ? (
+              <div className="py-10 text-center text-xs text-zinc-500">播放列表为空</div>
+            ) : (
+              activePlaylist.songs.map((song, idx) => {
+                const isCur = currentSong?.hash === song.hash;
+                return (
+                  <div
+                    key={`${song.hash}-${idx}`}
+                    onClick={() => playSong(song)}
+                    className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors ${
+                      isCur
+                        ? 'bg-cyan-500/10 text-cyan-300'
+                        : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+                    }`}
+                  >
+                    <span className="w-5 text-[11px] font-mono tabular-nums text-zinc-600 shrink-0 text-right">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <h4 className={`text-xs truncate ${isCur ? 'text-cyan-400 font-semibold' : ''}`}>
+                        {song.songName}
+                      </h4>
+                      <p className="text-[10px] text-zinc-500 truncate">{song.singerName}</p>
+                    </div>
+                    <span className="text-[10px] font-mono text-zinc-600 shrink-0 tabular-nums">
+                      {formatTime(song.duration)}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 移动端全屏弹窗 */}
       <MobileLyricsModal isOpen={isMobileModalOpen} onClose={() => setIsMobileModalOpen(false)} />

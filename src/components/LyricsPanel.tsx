@@ -3,24 +3,13 @@
  * 适配平板横屏与桌面端右侧区域，展示黑胶动效、主备音轨标识与自动滚动歌词
  */
 
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import { Disc3, Music } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
+import { LyricsScroller } from './LyricsScroller';
 
 export const LyricsPanel: React.FC = () => {
   const { currentSong, isPlaying, lyrics, activeLyricIndex, seek, audioSourceInfo } = usePlayer();
-  const lyricContainerRef = useRef<HTMLDivElement | null>(null);
-  const activeLineRef = useRef<HTMLParagraphElement | null>(null);
-
-  // 歌词随播放进度平滑自动居中滚动
-  useEffect(() => {
-    if (activeLineRef.current && lyricContainerRef.current) {
-      activeLineRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    }
-  }, [activeLyricIndex]);
 
   if (!currentSong) {
     return (
@@ -88,29 +77,15 @@ export const LyricsPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* 实时滚动歌词区域 */}
-      <div
-        ref={lyricContainerRef}
-        className="flex-1 overflow-y-auto space-y-4 text-center px-2 py-8 custom-scrollbar mask-gradient"
-      >
-        {lyrics.map((line, idx) => {
-          const isActive = idx === activeLyricIndex;
-          return (
-            <p
-              key={`${line.time}-${idx}`}
-              ref={isActive ? activeLineRef : null}
-              onClick={() => seek(line.time)}
-              className={`transition-all duration-300 cursor-pointer select-none leading-relaxed ${
-                isActive
-                  ? 'text-sm font-bold text-cyan-300 scale-105 drop-shadow-[0_0_12px_rgba(34,211,238,0.5)]'
-                  : 'text-xs text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              {line.text}
-            </p>
-          );
-        })}
-      </div>
+      {/* 实时滚动歌词区域（transform 位移滚动，丝滑无回弹） */}
+      <LyricsScroller
+        containerClassName="flex-1 px-2 py-8 mask-gradient"
+        lyrics={lyrics}
+        activeIndex={activeLyricIndex}
+        onSeek={seek}
+        activeClassName="text-[13px] leading-6 font-bold text-cyan-300 scale-110 drop-shadow-[0_0_12px_rgba(34,211,238,0.5)]"
+        idleClassName="text-[13px] leading-6 text-zinc-500 hover:text-zinc-300"
+      />
     </aside>
   );
 };

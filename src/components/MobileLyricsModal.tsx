@@ -3,7 +3,7 @@
  * 点击移动端底部 Mini 播放条弹出全屏沉浸式页面
  */
 
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import {
   ChevronDown,
   Disc3,
@@ -18,6 +18,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
+import { LyricsScroller } from './LyricsScroller';
 
 interface MobileLyricsModalProps {
   isOpen: boolean;
@@ -51,18 +52,6 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
     activeLyricIndex,
     audioSourceInfo,
   } = usePlayer();
-
-  const lyricContainerRef = useRef<HTMLDivElement | null>(null);
-  const activeLineRef = useRef<HTMLParagraphElement | null>(null);
-
-  useEffect(() => {
-    if (activeLineRef.current && lyricContainerRef.current) {
-      activeLineRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    }
-  }, [activeLyricIndex]);
 
   if (!isOpen || !currentSong) return null;
 
@@ -129,33 +118,19 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
           </div>
         </div>
 
-        {/* 滚动歌词区域 */}
-        <div
-          ref={lyricContainerRef}
-          className="w-full flex-1 overflow-y-auto space-y-4 text-center px-4 py-6 custom-scrollbar mask-gradient"
-        >
-          {lyrics.map((line, idx) => {
-            const isActive = idx === activeLyricIndex;
-            return (
-              <p
-                key={`${line.time}-${idx}`}
-                ref={isActive ? activeLineRef : null}
-                onClick={() => seek(line.time)}
-                className={`transition-all duration-300 leading-relaxed ${
-                  isActive
-                    ? 'text-base font-bold text-cyan-300 scale-105 drop-shadow-[0_0_12px_rgba(34,211,238,0.6)]'
-                    : 'text-xs text-zinc-500'
-                }`}
-              >
-                {line.text}
-              </p>
-            );
-          })}
-        </div>
+        {/* 滚动歌词区域（transform 位移滚动，丝滑无回弹） */}
+        <LyricsScroller
+          containerClassName="w-full flex-1 px-4 py-6 mask-gradient"
+          lyrics={lyrics}
+          activeIndex={activeLyricIndex}
+          onSeek={seek}
+          activeClassName="text-[15px] leading-7 font-bold text-cyan-300 scale-110 drop-shadow-[0_0_12px_rgba(34,211,238,0.6)]"
+          idleClassName="text-[15px] leading-7 text-zinc-500"
+        />
       </div>
 
       {/* 底部播放进度条与大控制按钮 */}
-      <div className="px-6 pb-8 pt-2 shrink-0 bg-zinc-950/80">
+      <div className="px-6 pt-2 shrink-0 bg-zinc-950/80 pb-[max(2rem,env(safe-area-inset-bottom))]">
         {/* 进度条 */}
         <div className="mb-4">
           <input

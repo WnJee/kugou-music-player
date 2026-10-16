@@ -4,9 +4,15 @@
  */
 
 import { md5 } from '../utils/md5';
+import { getDeviceMid } from './device';
 import { httpGet } from './http';
 
 const SIGNATURE_WEB_SECRET = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
+
+// 酷狗 Android 客户端 appid / clientver（网关接口需与登录态所属 appid 一致）
+const KUGOU_ANDROID_APPID = 1005;
+// 二维码创建接口使用的 appid（酷狗官方 Android 端取值）
+const KUGOU_QRCODE_APPID = 1001;
 
 export interface QrCodeKeyResult {
   qrcode: string;
@@ -24,19 +30,6 @@ export interface QrCodeStatusResult {
 }
 
 /**
- * 生成设备随机唯一 MID
- */
-function generateMid(): string {
-  const randomStr = Math.random().toString(36).substring(2) + Date.now().toString(36);
-  const hash = md5(randomStr);
-  try {
-    return BigInt('0x' + hash).toString();
-  } catch {
-    return '239526275778893399526700786998289824956';
-  }
-}
-
-/**
  * 计算 Web 端登录接口 MD5 签名
  */
 function signWebParams(params: Record<string, string | number>): string {
@@ -50,16 +43,16 @@ function signWebParams(params: Record<string, string | number>): string {
  */
 export async function createLoginQrCode(): Promise<QrCodeKeyResult> {
   const clienttime = Math.floor(Date.now() / 1000);
-  const mid = generateMid();
+  const mid = await getDeviceMid();
 
   const params: Record<string, string | number> = {
-    appid: 1014,
+    appid: KUGOU_QRCODE_APPID,
     clienttime,
     clientver: 20489,
     dfid: '-',
     mid,
     plat: 4,
-    qrcode_txt: 'https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=1014&',
+    qrcode_txt: `https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=${KUGOU_ANDROID_APPID}&`,
     srcappid: 2919,
     type: 1,
     uuid: '-',
@@ -97,10 +90,10 @@ export async function createLoginQrCode(): Promise<QrCodeKeyResult> {
  */
 export async function checkLoginQrCode(qrcodeKey: string): Promise<QrCodeStatusResult> {
   const clienttime = Math.floor(Date.now() / 1000);
-  const mid = generateMid();
+  const mid = await getDeviceMid();
 
   const params: Record<string, string | number> = {
-    appid: 1014,
+    appid: KUGOU_ANDROID_APPID,
     clienttime,
     clientver: 20489,
     dfid: '-',

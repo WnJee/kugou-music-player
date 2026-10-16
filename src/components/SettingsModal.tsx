@@ -27,7 +27,7 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
-  const { refreshUserSettings, syncCloudPlaylists } = usePlayer();
+  const { refreshUserSettings, syncCloudPlaylists, vipStatus, refreshVipStatus } = usePlayer();
   const [settings, setSettings] = useState<UserSettings>({
     kugouToken: '',
     kugouUserId: '',
@@ -46,13 +46,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   // 签到状态
   const [isCheckinLoading, setIsCheckinLoading] = useState(false);
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
+  // 退出登录二次确认（Tauri WebView 不支持原生 window.confirm，改用内联确认）
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 防风控：扫码轮询次数上限（150 次 × 2s ≈ 5 分钟，正常二维码在此之前就会过期）
+  const MAX_POLL_ATTEMPTS = 150;
+  const pollAttemptsRef = useRef(0);
 
   // 1. 获取登录二维码
   const loadNewQrCode = async () => {
     setIsQrLoading(true);
     setIsQrExpired(false);
+    pollAttemptsRef.current = 0;
     setQrStatusText('正在加载二维码...');
     try {
       const res = await createLoginQrCode();
@@ -79,6 +85,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       try {
         const checkRes = await checkLoginQrCode(qrcodeKey);
 
+        pollAttemptsRef.current += 1;
+        if (pollAttemptsRef.current > MAX_POLL_ATTEMPTS) {
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          setIsQrExpired(true);
+          setQrStatusText('二维码长时间未扫码，请点击刷新重试');
+          return;
+        }
         if (checkRes.status === 1) {
           setQrStatusText('请使用手机酷狗音乐 App 扫一扫');
         } else if (checkRes.status === 2) {
@@ -87,7 +100,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           // 登录成功！
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           setQrStatusText('登录授权成功！正在同步...');
-
           const updated = await saveUserSettings({
             kugouToken: checkRes.token,
             kugouUserId: checkRes.userid || '',
@@ -98,12 +110,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
           // 立即更新全局状态并同步用户账号下的云端歌单
           await refreshUserSettings();
-          await syncCloudPlaylists();
+          await syncCloudPlaylists(true);
 
           // 自动触发一次概念版 VIP 打卡
           if (updated.kugouToken && updated.kugouUserId) {
             checkinConceptVip(updated.kugouToken, updated.kugouUserId).then((r) => {
               setCheckinMessage(r.message);
+              // 打卡后刷新 VIP 实时状态标识
+              refreshVipStatus();
             });
           }
         } else if (checkRes.status === 5) {
@@ -125,10 +139,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   // 打开弹窗初始化
   useEffect(() => {
     if (isOpen) {
+      setShowLogoutConfirm(false);
       getUserSettings().then((s) => {
         setSettings(s);
         if (!s.kugouToken) {
           loadNewQrCode();
+        } else {
+          // 已登录：打开弹窗即刷新 VIP 实时状态标识
+          refreshVipStatus();
         }
       });
       setCheckinMessage(null);
@@ -139,20 +157,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
   if (!isOpen) return null;
 
-  // 退出登录
+  // 退出登录（清除本地登录态，回到扫码界面）
   const handleLogout = async () => {
-    if (confirm('确定要退出当前酷狗账号吗？')) {
-      const updated = await saveUserSettings({
-        kugouToken: '',
-        kugouUserId: '',
-        nickname: '',
-        avatar: '',
-      });
-      setSettings(updated);
-      await refreshUserSettings();
-      setCheckinMessage(null);
-      loadNewQrCode();
-    }
+    const updated = await saveUserSettings({
+      kugouToken: '',
+      kugouUserId: '',
+      nickname: '',
+      avatar: '',
+    });
+    setSettings(updated);
+    setShowLogoutConfirm(false);
+    await refreshUserSettings();
+    setCheckinMessage(null);
+    loadNewQrCode();
   };
 
   // 手动打卡领 VIP
@@ -163,6 +180,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     try {
       const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId);
       setCheckinMessage(res.message);
+      // 打卡后立即刷新 VIP 实时状态标识
+      await refreshVipStatus();
       const updated = await getUserSettings();
       setSettings(updated);
     } finally {
@@ -248,11 +267,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   )}
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
                     <span>{settings.nickname || '酷狗用户'}</span>
                     <span className="px-1.5 py-0.2 rounded text-[9px] bg-emerald-500/20 text-emerald-300 font-medium">
                       已授权
                     </span>
+                    {/* 概念版 VIP 实时状态标识 */}
+                    {vipStatus?.isVip ? (
+                      <span
+                        title={vipStatus.vipEndTime ? `概念版 VIP 到期：${vipStatus.vipEndTime}` : '概念版 VIP 生效中'}
+                        className="px-1.5 py-0.2 rounded text-[9px] bg-gradient-to-r from-amber-500/30 to-yellow-500/30 text-amber-300 border border-amber-500/40 font-medium whitespace-nowrap"
+                      >
+                        ★ 概念版 VIP{vipStatus.vipEndTime ? ` · ${vipStatus.vipEndTime.slice(5, 10)}` : ''}
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] bg-zinc-700/50 text-zinc-400 font-medium">
+                        非 VIP
+                      </span>
+                    )}
                   </h3>
                   <p className="text-xs text-zinc-400 font-mono mt-0.5">
                     UID: {settings.kugouUserId}
@@ -261,13 +293,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <button
-                onClick={handleLogout}
+                onClick={() => setShowLogoutConfirm(true)}
                 title="退出并切换账号"
                 className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-zinc-400 hover:text-red-400 transition-colors"
               >
                 <LogOut className="w-4 h-4" />
               </button>
             </div>
+
+            {/* 退出登录内联确认条 */}
+            {showLogoutConfirm && (
+              <div className="mb-3 p-3 rounded-xl bg-red-500/10 border border-red-500/25 flex items-center justify-between gap-3">
+                <span className="text-[11px] text-red-200 leading-relaxed">
+                  确定退出当前酷狗账号？退出后需重新扫码授权。
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => setShowLogoutConfirm(false)}
+                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-[11px] transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-300 text-[11px] font-medium transition-colors"
+                  >
+                    退出登录
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* 概念版自动打卡与打卡记录 */}
             <div className="pt-3 border-t border-white/5 space-y-3">
