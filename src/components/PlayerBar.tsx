@@ -58,7 +58,7 @@ export const PlayerBar: React.FC = () => {
       {/* 1. 移动端悬浮 Mini 播放条 (< md 断点) */}
       <div
         onClick={() => setIsMobileModalOpen(true)}
-        className="md:hidden fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 right-3 z-30 flex items-center justify-between p-2.5 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 cursor-pointer active:scale-[0.99] transition-transform select-none"
+        className="lg:hidden fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 right-3 z-30 flex items-center justify-between p-2.5 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 cursor-pointer active:scale-[0.99] transition-transform select-none"
       >
         <div className="flex items-center gap-3 min-w-0 flex-1 mr-3">
           <div className="relative w-10 h-10 rounded-xl overflow-hidden shrink-0 bg-zinc-800 border border-white/10">
@@ -110,7 +110,7 @@ export const PlayerBar: React.FC = () => {
       </div>
 
       {/* 2. 桌面端 / 平板底部固定全功能播放栏 (>= md 断点) */}
-      <footer className="hidden md:flex items-center justify-between h-20 px-6 bg-zinc-950/80 backdrop-blur-2xl border-t border-white/10 shrink-0 z-30 select-none">
+      <footer className="hidden lg:flex items-center justify-between h-20 px-6 bg-zinc-950/80 backdrop-blur-2xl border-t border-white/10 shrink-0 z-30 select-none">
         {/* 左侧：曲目信息与音轨标识 */}
         <div className="flex items-center gap-3.5 w-1/4 min-w-[200px]">
           <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0 bg-zinc-800 border border-white/10 shadow-md">
@@ -236,7 +236,7 @@ export const PlayerBar: React.FC = () => {
 
       {/* 播放列表面板 */}
       {isQueueOpen && (
-        <div className="hidden md:flex flex-col absolute right-4 bottom-24 w-96 max-h-[60vh] z-40 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 overflow-hidden">
+        <div className="hidden lg:flex flex-col absolute right-4 bottom-24 w-96 max-h-[60vh] z-40 rounded-2xl bg-zinc-900/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/80 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <ListMusic className="w-4 h-4 text-cyan-400 shrink-0" />

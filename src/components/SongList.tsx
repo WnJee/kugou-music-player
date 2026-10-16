@@ -104,7 +104,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-950/40 relative">
       {/* 移动端顶部状态条（小屏可见） */}
-      <div className="md:hidden flex items-center justify-between px-4 py-3 bg-zinc-900/60 backdrop-blur-xl border-b border-white/10 shrink-0">
+      <div className="lg:hidden flex items-center justify-between px-4 py-3 bg-zinc-900/60 backdrop-blur-xl border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center">
             <Sparkles className="w-4 h-4 text-white" />
