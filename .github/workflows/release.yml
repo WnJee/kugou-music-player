@@ -114,12 +114,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd src-tauri/gen/android/app/build/outputs/apk
-          for f in aarch64/debug/*.apk armv7/debug/*.apk; do
-            abi=$(echo "$f" | cut -d/ -f1)
+          # 自动定位 APK，兼容 universal 合并与分 ABI 两种输出布局
+          shopt -s nullglob
+          found=0
+          for f in $(find . -name '*.apk'); do
+            abi=$(basename "$(dirname "$f")")
             case "$abi" in
-              aarch64) out="KuGouPlayer-${{ github.ref_name }}-android-arm64.apk" ;;
-              armv7)   out="KuGouPlayer-${{ github.ref_name }}-android-armv7.apk" ;;
+              universal) out="KuGouPlayer-${{ github.ref_name }}-android-universal.apk" ;;
+              aarch64)   out="KuGouPlayer-${{ github.ref_name }}-android-arm64.apk" ;;
+              armv7)     out="KuGouPlayer-${{ github.ref_name }}-android-armv7.apk" ;;
+              x86)       out="KuGouPlayer-${{ github.ref_name }}-android-x86.apk" ;;
+              x86_64)    out="KuGouPlayer-${{ github.ref_name }}-android-x86_64.apk" ;;
+              *)         out="KuGouPlayer-${{ github.ref_name }}-android-${abi}.apk" ;;
             esac
             cp "$f" "/tmp/$out"
+            found=1
           done
+          if [ "$found" != 1 ]; then
+            echo "::error::未找到任何 APK"; ls -R .; exit 1
+          fi
           gh release upload "${{ github.ref_name }}" /tmp/KuGouPlayer-*.apk --clobber --repo "$GITHUB_REPOSITORY"
