@@ -496,7 +496,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         </div>
 
         {/* 应用更新 */}
-        <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/5">
+        <div className="mt-4 mb-5 flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Download className="w-3.5 h-3.5 text-cyan-400" />
