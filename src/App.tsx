@@ -11,11 +11,19 @@ import { LyricsPanel } from './components/LyricsPanel';
 import { PlayerBar } from './components/PlayerBar';
 import { ImportModal } from './components/ImportModal';
 import { SettingsModal } from './components/SettingsModal';
+import { UpdateModal } from './components/UpdateModal';
 
 const AppContent: React.FC = () => {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // 更新弹窗：0 = 未打开（启动静默检查），>0 = 打开并触发一次检查
+  const [updateCheckSignal, setUpdateCheckSignal] = useState(0);
+  const [isUpdateOpen, setIsUpdateOpen] = useState(false);
 
+  const openUpdateModal = () => {
+    setUpdateCheckSignal((n) => n + 1);
+    setIsUpdateOpen(true);
+  };
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gradient-to-br from-zinc-950 via-zinc-900 to-black text-zinc-100 select-none relative pt-[env(safe-area-inset-top)]">
       {/* 背景动态毛玻璃氛围晕光 */}
@@ -46,7 +54,15 @@ const AppContent: React.FC = () => {
 
       {/* 全局导入与设置弹窗 */}
       <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} />
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        onOpenUpdate={openUpdateModal}
+      />
+      {/* 应用更新弹窗（启动静默检查 + 手动检查） */}
+      {isUpdateOpen && (
+        <UpdateModal checkSignal={updateCheckSignal} onClose={() => setIsUpdateOpen(false)} />
+      )}
     </div>
   );
 };

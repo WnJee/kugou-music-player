@@ -8,6 +8,7 @@ import {
   Check,
   CheckCircle2,
   FolderSync,
+  Download,
   LogOut,
   QrCode,
   RefreshCw,
@@ -24,9 +25,11 @@ import type { UserSettings } from '../types/music';
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** 打开应用更新弹窗（App.tsx 提供） */
+  onOpenUpdate?: () => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenUpdate }) => {
   const { refreshUserSettings, syncCloudPlaylists, vipStatus, refreshVipStatus } = usePlayer();
   const [settings, setSettings] = useState<UserSettings>({
     kugouToken: '',
@@ -490,6 +493,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             placeholder="自定义接口模板(选填): https://api.example.com?name={name}&artist={artist}"
             className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500/50 font-mono"
           />
+        </div>
+
+        {/* 应用更新 */}
+        <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Download className="w-3.5 h-3.5 text-cyan-400" />
+              <span>应用更新</span>
+            </div>
+            <p className="text-[11px] text-zinc-400 mt-0.5">
+              检查 GitHub 新版本，应用内下载并自动重启
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              onClose();
+              onOpenUpdate?.();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-200 text-xs transition-colors shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            检查更新
+          </button>
         </div>
 
         {/* 底部按钮 */}
