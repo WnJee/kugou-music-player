@@ -145,7 +145,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
             <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="搜索歌曲名称或歌手（回车或点击全网搜索）..."
+              placeholder="搜索歌曲名称或歌手"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
