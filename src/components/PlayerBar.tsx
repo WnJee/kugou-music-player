@@ -16,6 +16,7 @@ import {
   Shuffle,
   Volume2,
   VolumeX,
+  Trash2,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { MobileLyricsModal } from './MobileLyricsModal';
@@ -45,8 +46,11 @@ export const PlayerBar: React.FC = () => {
     playMode,
     cyclePlayMode,
     audioSourceInfo,
+    errorMsg,
     activePlaylist,
     playSong,
+    queueSongs,
+    clearQueue,
   } = usePlayer();
 
   const [isMobileModalOpen, setIsMobileModalOpen] = useState(false);
@@ -131,12 +135,25 @@ export const PlayerBar: React.FC = () => {
             <h4 className="text-xs font-semibold text-white truncate">{currentSong.songName}</h4>
             <p className="text-[11px] text-zinc-400 truncate mt-0.5">{currentSong.singerName}</p>
             <div className="mt-1">
-              {audioSourceInfo?.source === 'primary' ? (
-                <span className="inline-block px-1.5 py-0.2 rounded text-[9px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">
+              {errorMsg ? (
+                <span
+                  className="inline-block max-w-[220px] truncate text-[9px] text-red-400"
+                  title={errorMsg}
+                >
+                  {errorMsg}
+                </span>
+              ) : audioSourceInfo?.source === 'primary' ? (
+                <span
+                  className="inline-block px-1.5 py-0.2 rounded text-[9px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium"
+                  title={audioSourceInfo.msg}
+                >
                   官方主轨 ({audioSourceInfo.bitrate || 128}k)
                 </span>
               ) : audioSourceInfo?.source === 'fallback' ? (
-                <span className="inline-block px-1.5 py-0.2 rounded text-[9px] bg-amber-500/10 border border-amber-500/20 text-amber-400 font-medium">
+                <span
+                  className="inline-block px-1.5 py-0.2 rounded text-[9px] bg-amber-500/10 border border-amber-500/20 text-amber-400 font-medium"
+                  title={audioSourceInfo.msg}
+                >
                   备轨 Fallback
                 </span>
               ) : null}
@@ -241,30 +258,41 @@ export const PlayerBar: React.FC = () => {
             <div className="flex items-center gap-2 min-w-0">
               <ListMusic className="w-4 h-4 text-cyan-400 shrink-0" />
               <h3 className="text-xs font-bold text-white truncate">
-                {activePlaylist ? activePlaylist.name : '播放列表'}
+                {activePlaylist?.name || '播放列表'}
               </h3>
               <span className="text-[11px] text-zinc-500 shrink-0">
-                {activePlaylist?.songs.length || 0} 首
+                {queueSongs.length} 首
               </span>
             </div>
-            <button
-              onClick={() => setIsQueueOpen(false)}
-              className="text-zinc-500 hover:text-white text-xs shrink-0"
-            >
-              ✕
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={clearQueue}
+                disabled={queueSongs.length === 0}
+                title="清空播放列表"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-red-500/15 hover:text-red-300 disabled:opacity-40 disabled:hover:bg-white/[0.04] text-[11px] text-zinc-400 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>清空</span>
+              </button>
+              <button
+                onClick={() => setIsQueueOpen(false)}
+                className="text-zinc-500 hover:text-white text-xs shrink-0"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {!activePlaylist || activePlaylist.songs.length === 0 ? (
+            {queueSongs.length === 0 ? (
               <div className="py-10 text-center text-xs text-zinc-500">播放列表为空</div>
             ) : (
-              activePlaylist.songs.map((song, idx) => {
+              queueSongs.map((song, idx) => {
                 const isCur = currentSong?.hash === song.hash;
                 return (
                   <div
                     key={`${song.hash}-${idx}`}
-                    onClick={() => playSong(song)}
+                    onClick={() => playSong(song, activePlaylist || undefined)}
                     className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors ${
                       isCur
                         ? 'bg-cyan-500/10 text-cyan-300'

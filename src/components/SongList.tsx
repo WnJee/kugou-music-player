@@ -82,7 +82,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
   // 歌单内搜索过滤
   const filteredPlaylistSongs = useMemo(() => {
     if (!activePlaylist?.songs) return [];
-    // 倒序展示：最新添加的排在前面
+    // 与“我的歌单”保持一致：最新添加的歌曲显示在最前面
     const reversed = [...activePlaylist.songs].reverse();
     if (!searchQuery.trim()) return reversed;
     const query = searchQuery.toLowerCase().trim();
@@ -403,9 +403,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                 {activePlaylist.songs.length > 0 && (
                   <div className="mt-4 flex items-center gap-3">
                     <button
-                      onClick={() =>
-                        playSong(activePlaylist.songs[activePlaylist.songs.length - 1])
-                      }
+                      onClick={() => playSong(activePlaylist.songs[0], activePlaylist)}
                       className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-xs shadow-lg shadow-cyan-500/20 active:scale-95 transition-all"
                     >
                       <Play className="w-3.5 h-3.5 fill-white" />

@@ -7,7 +7,7 @@
 import { Store } from '@tauri-apps/plugin-store';
 import type { AudioSourceResult, KuGouSong, UserSettings } from '../types/music';
 import { md5 } from '../utils/md5';
-import { httpGet, httpPost, KUGOU_GATEWAY_UA } from './http';
+import { httpGet, httpPost, KUGOU_CONCEPT_UA, KUGOU_GATEWAY_UA } from './http';
 import { getDeviceMid } from './device';
 
 const SETTINGS_STORE_FILE = 'kugou_settings.json';
@@ -387,6 +387,13 @@ export async function tryAutoCheckin(): Promise<void> {
  * 酷狗标准版音源 key 盐值（取自官方 Android 客户端）
  */
 const TRACKER_KEY_SALT = '57ae12eb6890223e355ccfcb74edf70d';
+// 酷狗概念版（lite）专用协议参数：登录态与 appid 必须同平台，VIP 鉴权才会生效。
+const CONCEPT_APPID = 3116;
+const CONCEPT_CLIENTVER = 11430;
+const CONCEPT_SIGNATURE_SALT = 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA';
+const CONCEPT_TRACKER_KEY_SALT = '185672dd44712f60bb1736df5a377e82';
+const CONCEPT_PAGE_ID = 967177915;
+const CONCEPT_PPID = '356753938,823673182,967485191';
 
 /**
  * 酷狗 Android 网关签名盐值
@@ -409,10 +416,36 @@ function signGatewayParams(
 interface TrackerV5Response {
   status: number;
   error_code?: number;
+  error_msg?: string;
   url?: string[] | string;
   timeLength?: number;
   bitRate?: number;
   fileSize?: number;
+}
+
+function trackerUserAgent(settings: UserSettings): string {
+  // 网关 UA 是官方 Android 协议标识；概念版差异由 appid/盐值和页面 ID 控制。
+  return KUGOU_GATEWAY_UA;
+}
+
+interface TrackerAttempt {
+  result: AudioSourceResult | null;
+  errorCode?: number;
+  errorMsg?: string;
+}
+
+function hasCredentials(settings: UserSettings): boolean {
+  return Boolean(settings.kugouToken && settings.kugouUserId);
+}
+
+function describeMissingVipPermission(
+  song: KuGouSong,
+  settings: UserSettings
+): string {
+  if (!hasCredentials(settings)) {
+    return `《${song.songName}》为 VIP 专享，请先在设置中授权酷狗概念版账号`;
+  }
+  return `《${song.songName}》官方音源无完整播放权限，请确认概念版 VIP 生效且账号未被限制`;
 }
 
 /**
@@ -425,13 +458,14 @@ export async function resolveKugouAudioUrl(
   song: KuGouSong,
   settings: UserSettings,
   quality: number | string = 128
-): Promise<AudioSourceResult | null> {
+): Promise<TrackerAttempt> {
   const hash = (song.hash || '').toLowerCase();
-  if (!hash) return null;
+  if (!hash) return { result: null };
 
   const mid = await getDeviceMid();
   const userid = settings.kugouUserId || '0';
-  const appid = 1005;
+  const isConcept = hasCredentials(settings);
+  const appid = isConcept ? CONCEPT_APPID : 1005;
   const clienttime = Math.floor(Date.now() / 1000);
 
   const params: Record<string, string | number> = {
@@ -439,7 +473,7 @@ export async function resolveKugouAudioUrl(
     mid,
     uuid: '-',
     appid,
-    clientver: 11430,
+    clientver: isConcept ? CONCEPT_CLIENTVER : 11430,
     clienttime,
     token: settings.kugouToken || '',
     userid: Number(userid) || 0,
@@ -448,25 +482,37 @@ export async function resolveKugouAudioUrl(
     hash,
     ssa_flag: 'is_fromtrack',
     version: 11430,
-    page_id: 151369488,
+    page_id: isConcept ? CONCEPT_PAGE_ID : 151369488,
     quality,
     album_audio_id: Number(song.mixSongId || 0),
     behavior: 'play',
-    pid: 2,
+    pid: isConcept ? 411 : 2,
     cmd: 26,
     pidversion: 3001,
     IsFreePart: 0,
-    ppage_id: '463467626,350369493,788954147',
+    ppage_id: isConcept ? CONCEPT_PPID : '463467626,350369493,788954147',
     cdnBackup: 1,
     module: '',
-    key: md5(`${hash}${TRACKER_KEY_SALT}${appid}${mid}${userid}`),
+    key: md5(
+      `${hash}${
+        isConcept ? CONCEPT_TRACKER_KEY_SALT : TRACKER_KEY_SALT
+      }${appid}${mid}${userid}`
+    ),
   };
-  params.signature = signGatewayParams(params);
+  params.signature = isConcept
+    ? md5(
+        `${CONCEPT_SIGNATURE_SALT}${Object.keys(params)
+          .filter((k) => k !== 'signature')
+          .sort()
+          .map((k) => `${k}=${params[k]}`)
+          .join('')}${CONCEPT_SIGNATURE_SALT}`
+      )
+    : signGatewayParams(params);
 
   try {
     const res = await httpGet<TrackerV5Response>('https://gateway.kugou.com/v5/url', params, {
       headers: {
-        'User-Agent': KUGOU_GATEWAY_UA,
+        'User-Agent': trackerUserAgent(settings),
         'kg-rc': '1',
         'kg-thash': '5d816a0',
         'kg-rec': '1',
@@ -474,16 +520,18 @@ export async function resolveKugouAudioUrl(
         dfid: '-',
         clienttime: String(clienttime),
         mid,
+        // 酷狗鉴权除了 query token，还会校验登录 Cookie；缺失时会按未登录返回试听。
+        Cookie: `token=${settings.kugouToken || ''}; userid=${userid}; dfid=-`,
         'x-router': 'trackercdn.kugou.com',
       },
     });
 
-    if (res && res.status === 1) {
+    if (res?.status === 1) {
       const url = Array.isArray(res.url) ? res.url[0] : res.url;
       if (url) {
         const duration = res.timeLength || song.duration || 0;
         const isTrial = duration > 0 && duration <= 60 && song.duration > 75;
-        return {
+        const result: AudioSourceResult = {
           url,
           source: 'primary',
           bitrate: res.bitRate ? Math.round(res.bitRate / 1000) : 128,
@@ -491,13 +539,15 @@ export async function resolveKugouAudioUrl(
           isTrial,
           msg: isTrial ? '官方返回试听片段' : '官方原声音源',
         };
+        return { result };
       }
     }
+    return { result: null, errorCode: res?.error_code, errorMsg: res?.error_msg };
   } catch (err) {
     console.warn('[resolveKugouAudioUrl] 音源解析异常:', err);
   }
 
-  return null;
+  return { result: null };
 }
 
 /**
@@ -507,7 +557,21 @@ export async function fetchPrimaryOfficialAudio(
   song: KuGouSong,
   settings: UserSettings
 ): Promise<AudioSourceResult | null> {
-  return resolveKugouAudioUrl(song, settings, 128);
+  const attempts: Array<number | string> = [128, 128, '128'];
+  let lastFailure: TrackerAttempt | null = null;
+
+  for (const quality of attempts) {
+    const attempt = await resolveKugouAudioUrl(song, settings, quality);
+    if (attempt.result) return attempt.result;
+    lastFailure = attempt;
+  }
+
+  if (lastFailure?.errorCode) {
+    console.warn(
+      `[fetchPrimaryOfficialAudio] 官方音源未授权/未获取成功: ${lastFailure.errorCode} ${lastFailure.errorMsg || ''}`
+    );
+  }
+  return null;
 }
 
 /**
@@ -591,7 +655,7 @@ export async function fetchFallbackAudio(
         }
 
         // 复用统一音源解析器（旧实现走废弃的 /i/v2/ 且缺 mid，固定失败）
-        const resolved = await resolveKugouAudioUrl(
+        const resolved = (await resolveKugouAudioUrl(
           {
             hash: candidateHash,
             songName: cleanSongName,
@@ -603,7 +667,7 @@ export async function fetchFallbackAudio(
           },
           settings,
           128
-        );
+        )).result;
 
         if (resolved && resolved.duration > 60) {
           return {
@@ -666,9 +730,13 @@ export async function resolveAudioSource(song: KuGouSong): Promise<AudioSourceRe
   if (primaryResult) {
     return {
       ...primaryResult,
-      msg: '该歌曲为酷狗 VIP 专享，未匹配到完整替代音源，当前为试听片段。可在设置中配置概念版 Token 开启完整播放。',
+      msg: `${describeMissingVipPermission(song, settings)}；当前降级为试听片段。`,
     };
   }
 
-  throw new Error(`暂未找到歌曲《${song.songName}》的可用音频播放源`);
+  throw new Error(
+    hasCredentials(settings)
+      ? describeMissingVipPermission(song, settings)
+      : `暂未找到歌曲《${song.songName}》的可用音频播放源`
+  );
 }

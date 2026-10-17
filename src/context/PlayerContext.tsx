@@ -49,6 +49,9 @@ interface PlayerContextType {
   isLoadingAudio: boolean;
   audioSourceInfo: AudioSourceResult | null;
   errorMsg: string | null;
+  /** 当前播放队列（来自活动歌单的原始顺序） */
+  queueSongs: KuGouSong[];
+  clearQueue: () => Promise<void>;
 
   // 歌词状态
   lyrics: LyricLine[];
@@ -66,6 +69,10 @@ interface PlayerContextType {
 }
 
 const PlayerContext = createContext<PlayerContextType | null>(null);
+
+function sameSong(a: KuGouSong | null | undefined, b: KuGouSong | null | undefined): boolean {
+  return Boolean(a && b && a.hash && a.hash === b.hash);
+}
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
@@ -89,6 +96,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [activeLyricIndex, setActiveLyricIndex] = useState<number>(-1);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playRequestIdRef = useRef(0);
   // 恢复上次播放进度时暂存的目标位置，待音频元数据加载完成后定位
   const pendingSeekRef = useRef<number | null>(null);
   // 初始化 Audio 实例
@@ -355,9 +363,18 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // 播放单曲核心逻辑
   const playSong = async (song: KuGouSong, playlist?: KuGouPlaylist) => {
+    const requestId = ++playRequestIdRef.current;
     const targetPlaylist = playlist || activePlaylist;
     if (targetPlaylist && (!activePlaylist || activePlaylist.id !== targetPlaylist.id)) {
       setActivePlaylist(targetPlaylist);
+    }
+
+    // 先停掉并卸载旧音源，避免新歌解析失败时继续播放上一首。
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
     }
 
     setCurrentSong(song);
@@ -365,20 +382,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsLoadingAudio(true);
     setAudioSourceInfo(null);
     setCurrentTime(0);
+    setDuration(0);
+    setLyrics([]);
 
     // 异步拉取歌词
     fetchSongLyrics(song).then((lines) => setLyrics(lines));
 
     try {
       const sourceResult = await resolveAudioSource(song);
+      if (playRequestIdRef.current !== requestId) return;
       setAudioSourceInfo(sourceResult);
 
       if (audioRef.current) {
         audioRef.current.src = sourceResult.url;
-        await audioRef.current.play();
-        setIsPlaying(true);
+        await audioRef.current.play().then(() => {
+          if (playRequestIdRef.current !== requestId) {
+            audioRef.current?.pause();
+          }
+        });
       }
     } catch (err: unknown) {
+      if (playRequestIdRef.current !== requestId) return;
       console.error('[PlayerContext] 音源解析失败:', err);
       const msg = err instanceof Error ? err.message : '播放失败';
       setErrorMsg(msg);
@@ -399,9 +423,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // 获取下一曲索引
   const getNextSongIndex = useCallback((): number => {
-    if (!activePlaylist || activePlaylist.songs.length === 0 || !currentSong) return -1;
-    const currentIndex = activePlaylist.songs.findIndex((s) => s.hash === currentSong.hash);
-    const total = activePlaylist.songs.length;
+    const queue = [...(activePlaylist?.songs ?? [])].reverse();
+    if (queue.length === 0 || !currentSong) return -1;
+    const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
+    const total = queue.length;
 
     if (playMode === 'random') {
       let rand = Math.floor(Math.random() * total);
@@ -415,21 +440,55 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // 下一曲
   const nextSong = useCallback(() => {
-    if (!activePlaylist || activePlaylist.songs.length === 0) return;
+    const queue = [...(activePlaylist?.songs ?? [])].reverse();
+    if (queue.length === 0) return;
     const nextIdx = getNextSongIndex();
     if (nextIdx >= 0) {
-      playSong(activePlaylist.songs[nextIdx]);
+      playSong(queue[nextIdx]);
     }
   }, [activePlaylist, getNextSongIndex]);
 
   // 上一曲
   const prevSong = () => {
-    if (!activePlaylist || activePlaylist.songs.length === 0 || !currentSong) return;
-    const currentIndex = activePlaylist.songs.findIndex((s) => s.hash === currentSong.hash);
-    const total = activePlaylist.songs.length;
+    const queue = [...(activePlaylist?.songs ?? [])].reverse();
+    if (queue.length === 0 || !currentSong) return;
+    const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
+    const total = queue.length;
     const prevIdx = (currentIndex - 1 + total) % total;
-    playSong(activePlaylist.songs[prevIdx]);
+    playSong(queue[prevIdx]);
   };
+
+  // UI 与切歌都从上到下按“最新添加在前”排序。
+  const queueSongs = [...(activePlaylist?.songs ?? [])].reverse();
+
+  const clearQueue = useCallback(async () => {
+    playRequestIdRef.current += 1;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    setCurrentSong(null);
+    setAudioSourceInfo(null);
+    setLyrics([]);
+    setActiveLyricIndex(-1);
+    setErrorMsg(null);
+    setIsPlaying(false);
+    setIsLoadingAudio(false);
+    setCurrentTime(0);
+    setDuration(0);
+    // 清空队列时同步移除“上次播放”的恢复记录
+    await savePlaybackPrefs({ song: null, position: 0 });
+
+    if (activePlaylist) {
+      const updated: KuGouPlaylist = { ...activePlaylist, songs: [], totalSongs: 0 };
+      const next = playlists.map((p) => (p.id === updated.id ? updated : p));
+      setPlaylists(next);
+      setActivePlaylist(updated);
+      await saveAllPlaylistsToStorage(next);
+    }
+  }, [activePlaylist, playlists]);
 
   // 监听歌曲自然播放结束
   useEffect(() => {
@@ -588,6 +647,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (activePlaylist?.id === id) {
       const remaining = playlists.filter((p) => p.id !== id);
       setActivePlaylist(remaining.length > 0 ? remaining[0] : null);
+      if (remaining.length === 0) void clearQueue();
     }
   };
 
@@ -700,6 +760,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         isLoadingAudio,
         audioSourceInfo,
         errorMsg,
+        queueSongs,
+        clearQueue,
 
         lyrics,
         activeLyricIndex,

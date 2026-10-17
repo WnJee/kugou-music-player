@@ -15,6 +15,7 @@ import {
   Repeat1,
   Rewind,
   Shuffle,
+  Trash2,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -52,8 +53,11 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
     lyrics,
     activeLyricIndex,
     audioSourceInfo,
+    errorMsg,
     activePlaylist,
     playSong,
+    queueSongs,
+    clearQueue,
   } = usePlayer();
 
   // 播放列表面板（与桌面版队列功能对齐）
@@ -128,6 +132,15 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
               </span>
             ) : null}
           </div>
+          {(errorMsg || audioSourceInfo?.msg) && (
+            <p
+              className={`mt-2 max-w-xs text-[11px] leading-5 line-clamp-2 ${
+                errorMsg ? 'text-red-400' : 'text-amber-300/90'
+              }`}
+            >
+              {errorMsg || audioSourceInfo?.msg}
+            </p>
+          )}
         </div>
 
         {/* 滚动歌词区域（transform 位移滚动，丝滑无回弹） */}
@@ -220,27 +233,38 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
                   {activePlaylist ? activePlaylist.name : '播放列表'}
                 </h3>
                 <span className="text-[11px] text-zinc-500 shrink-0">
-                  {activePlaylist?.songs.length || 0} 首
+                  {queueSongs.length} 首
                 </span>
               </div>
-              <button
-                onClick={() => setIsQueueOpen(false)}
-                className="text-zinc-500 hover:text-white text-xs shrink-0 p-1"
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={clearQueue}
+                  disabled={queueSongs.length === 0}
+                  title="清空播放列表"
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-red-500/15 hover:text-red-300 disabled:opacity-40 disabled:hover:bg-white/[0.04] text-[11px] text-zinc-400 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>清空</span>
+                </button>
+                <button
+                  onClick={() => setIsQueueOpen(false)}
+                  className="text-zinc-500 hover:text-white text-xs p-1"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar">
-              {!activePlaylist || activePlaylist.songs.length === 0 ? (
+              {queueSongs.length === 0 ? (
                 <div className="py-10 text-center text-xs text-zinc-500">播放列表为空</div>
               ) : (
-                activePlaylist.songs.map((song, idx) => {
+                queueSongs.map((song, idx) => {
                   const isCur = currentSong?.hash === song.hash;
                   return (
                     <div
                       key={`${song.hash}-${idx}`}
-                      onClick={() => playSong(song)}
+                      onClick={() => playSong(song, activePlaylist || undefined)}
                       className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors ${
                         isCur
                           ? 'bg-cyan-500/10 text-cyan-300'
