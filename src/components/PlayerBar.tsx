@@ -258,7 +258,7 @@ export const PlayerBar: React.FC = () => {
             <div className="flex items-center gap-2 min-w-0">
               <ListMusic className="w-4 h-4 text-cyan-400 shrink-0" />
               <h3 className="text-xs font-bold text-white truncate">
-                {activePlaylist?.name || '播放列表'}
+                播放列表
               </h3>
               <span className="text-[11px] text-zinc-500 shrink-0">
                 {queueSongs.length} 首
@@ -292,7 +292,7 @@ export const PlayerBar: React.FC = () => {
                 return (
                   <div
                     key={`${song.hash}-${idx}`}
-                    onClick={() => playSong(song, activePlaylist || undefined)}
+                    onClick={() => playSong(song)}
                     className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors ${
                       isCur
                         ? 'bg-cyan-500/10 text-cyan-300'

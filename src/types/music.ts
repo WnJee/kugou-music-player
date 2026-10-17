@@ -87,6 +87,8 @@ export interface UserSettings {
   lastCheckinDate?: string;
   /** 自定义备用音源 API 地址 */
   customFallbackApi: string;
+  /** 登录平台 appid（3116=概念版，1005=标准版；决定网关签名与鉴权平台） */
+  kugouAppId?: number;
 }
 
 export interface AudioSourceResult {

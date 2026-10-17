@@ -109,6 +109,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             kugouUserId: checkRes.userid || '',
             nickname: checkRes.nickname || '酷狗音乐用户',
             avatar: checkRes.avatar || '',
+            kugouAppId: 3116, // 概念版平台登录，token 与播放鉴权同平台
           });
           setSettings(updated);
 

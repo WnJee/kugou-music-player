@@ -264,7 +264,7 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
                   return (
                     <div
                       key={`${song.hash}-${idx}`}
-                      onClick={() => playSong(song, activePlaylist || undefined)}
+                      onClick={() => playSong(song)}
                       className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors ${
                         isCur
                           ? 'bg-cyan-500/10 text-cyan-300'

@@ -39,7 +39,7 @@ function formatSeconds(secs: number): string {
 }
 
 export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings }) => {
-  const { playlists, activePlaylist, selectPlaylist, currentSong, isPlaying, playSong } = usePlayer();
+  const { playlists, activePlaylist, selectPlaylist, currentSong, isPlaying, playSong, playAll } = usePlayer();
   const [searchQuery, setSearchQuery] = useState('');
   // 移动端歌单切换抽屉（无侧边栏，需要入口切换歌单）
   const [isPlaylistDrawerOpen, setIsPlaylistDrawerOpen] = useState(false);
@@ -232,7 +232,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                       <div
                         key={`${song.hash}-${index}`}
                         data-song-hash={song.hash}
-                        onClick={() => playSong(song)}
+                        onClick={() => playSong(song, { insertFront: true })}
                         className={`group relative grid grid-cols-[40px_minmax(0,1fr)] sm:grid-cols-[52px_minmax(96px,1fr)_64px_88px] xl:grid-cols-[52px_minmax(120px,1fr)_150px_64px_96px] items-center gap-3 px-3 sm:px-4 py-2.5 transition-colors cursor-pointer ${
                           isCurrent
                             ? 'bg-cyan-500/10 text-cyan-300'
@@ -247,7 +247,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                playSong(song);
+                                playSong(song, { insertFront: true });
                               }}
                               className="w-7 h-7 sm:w-6 sm:h-6 rounded-full bg-white/10 group-hover:bg-cyan-500 text-zinc-300 group-hover:text-white flex items-center justify-center transition-all"
                             >
@@ -299,7 +299,7 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              playSong(song);
+                              playSong(song, { insertFront: true });
                             }}
                             title="立即播放"
                             className="p-1.5 rounded-lg bg-white/5 hover:bg-cyan-500 hover:text-white text-zinc-400 transition-colors"
@@ -403,7 +403,13 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                 {activePlaylist.songs.length > 0 && (
                   <div className="mt-4 flex items-center gap-3">
                     <button
-                      onClick={() => playSong(activePlaylist.songs[0], activePlaylist)}
+                      onClick={() =>
+                        playAll(
+                          filteredPlaylistSongs.length > 0
+                            ? filteredPlaylistSongs
+                            : [...activePlaylist.songs].reverse()
+                        )
+                      }
                       className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-xs shadow-lg shadow-cyan-500/20 active:scale-95 transition-all"
                     >
                       <Play className="w-3.5 h-3.5 fill-white" />

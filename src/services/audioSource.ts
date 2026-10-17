@@ -103,12 +103,11 @@ function rsaNoPaddingHex(data: string): string {
   return result.toString(16).toUpperCase().padStart(256, '0');
 }
 
-export async function fetchUserProfile(
+async function fetchUserProfileWith(
   token: string,
-  userid: string
+  userid: string,
+  platform: GatewayPlatform
 ): Promise<{ nickname: string; avatar: string } | null> {
-  if (!token || !userid) return null;
-
   try {
     const mid = await getDeviceMid();
     const timestamp = Math.floor(Date.now() / 1000);
@@ -116,8 +115,8 @@ export async function fetchUserProfile(
       dfid: '-',
       mid,
       uuid: '-',
-      appid: 1005,
-      clientver: 20489,
+      appid: platform.appid,
+      clientver: platform.appid === CONCEPT_APPID ? CONCEPT_CLIENTVER : 20489,
       userid: Number(userid),
       clienttime: timestamp,
       token,
@@ -130,7 +129,7 @@ export async function fetchUserProfile(
       userid: Number(userid),
     };
     const bodyStr = JSON.stringify(body);
-    const signature = signGatewayParams(params, bodyStr);
+    const signature = signWithSalt(platform.signatureSalt, params, bodyStr);
     params.signature = signature;
 
     const res = await httpPost<{
@@ -162,15 +161,30 @@ export async function fetchUserProfile(
 }
 
 /**
+ * 拉取酷狗用户资料（昵称/头像），自动适配登录平台并在失败时切换平台重试
+ */
+export async function fetchUserProfile(
+  token: string,
+  userid: string
+): Promise<{ nickname: string; avatar: string } | null> {
+  if (!token || !userid) return null;
+
+  const settings = await getUserSettings();
+  const primary = platformOf(settings);
+  const profile = await fetchUserProfileWith(token, userid, primary);
+  if (profile) return profile;
+  return fetchUserProfileWith(token, userid, otherPlatform(primary));
+}
+
+/**
  * 查询概念版 VIP 实时状态（kugouvip 网关，与签到查询同接口）
  * 从 busi_vip 数组中取 busi_type === 'concept' 的条目判断是否有效会员
  */
-export async function fetchConceptVipStatus(
+async function fetchConceptVipStatusWith(
   token: string,
-  userid: string
+  userid: string,
+  platform: GatewayPlatform
 ): Promise<{ isVip: boolean; vipEndTime: string } | null> {
-  if (!token || !userid) return null;
-
   try {
     const mid = await getDeviceMid();
     const timestamp = Math.floor(Date.now() / 1000);
@@ -178,14 +192,14 @@ export async function fetchConceptVipStatus(
       dfid: '-',
       mid,
       uuid: '-',
-      appid: 1005,
-      clientver: 20489,
+      appid: platform.appid,
+      clientver: platform.appid === CONCEPT_APPID ? CONCEPT_CLIENTVER : 20489,
       userid: Number(userid),
       clienttime: timestamp,
       token,
       busi_type: 'concept',
     };
-    const signature = signGatewayParams(params, '');
+    const signature = signWithSalt(platform.signatureSalt, params, '');
     params.signature = signature;
 
     const res = await httpGet<{
@@ -224,6 +238,33 @@ export async function fetchConceptVipStatus(
 }
 
 /**
+ * 查询概念版 VIP 实时状态，自动适配登录平台并在失败时切换平台重试
+ */
+export async function fetchConceptVipStatus(
+  token: string,
+  userid: string
+): Promise<{ isVip: boolean; vipEndTime: string } | null> {
+  if (!token || !userid) return null;
+
+  const settings = await getUserSettings();
+  const primary = platformOf(settings);
+  const status = await fetchConceptVipStatusWith(token, userid, primary);
+  if (status) return status;
+  return fetchConceptVipStatusWith(token, userid, otherPlatform(primary));
+}
+
+/**
+ * Token 保活：轻量携带登录态的网关请求（复用 VIP 状态查询）。
+ * 酷狗登录态在长期无请求后会失效，定期活跃可尽量延长 token 有效期。
+ * 返回 null 表示查询失败（可能 token 已失效或网络异常）。
+ */
+export async function keepTokenAlive(token: string, userid: string): Promise<boolean> {
+  if (!token || !userid) return false;
+  const status = await fetchConceptVipStatus(token, userid);
+  return status !== null;
+}
+
+/**
  * 酷狗概念版每日领取 VIP（已实测可用的官方接口，2025+ 版本）
  * 流程（与酷狗概念版 App「听歌领会员」一致）：
  *   1. 听歌上报 /youth/v2/report/listen_song（clientver=10566 + 专用 UA）
@@ -231,7 +272,11 @@ export async function fetchConceptVipStatus(
  *   3. 查询 /v1/get_union_vip 获取概念版会员到期时间
  * 成功或"今日已领完"才写入 lastCheckinDate；失败如实返回错误信息。
  */
-export async function checkinConceptVip(token: string, userid: string): Promise<{ success: boolean; message: string }> {
+async function checkinConceptVipWith(
+  token: string,
+  userid: string,
+  platform: GatewayPlatform
+): Promise<{ success: boolean; message: string }> {
   if (!token || !userid) {
     return { success: false, message: '未配置 Token 或 UserID' };
   }
@@ -255,15 +300,15 @@ export async function checkinConceptVip(token: string, userid: string): Promise<
       dfid: '-',
       mid,
       uuid: '-',
-      appid: 1005,
-      clientver: 20489,
+      appid: platform.appid,
+      clientver: platform.appid === CONCEPT_APPID ? CONCEPT_CLIENTVER : 20489,
       userid: Number(userid),
       clienttime: timestamp,
       token,
       ...(extra.query || {}),
     };
     const bodyStr = data === undefined ? '' : JSON.stringify(data);
-    const signature = signGatewayParams(params, bodyStr);
+    const signature = signWithSalt(platform.signatureSalt, params, bodyStr);
     params.signature = signature;
 
     return httpPost<T>(`${extra.base || 'https://gateway.kugou.com'}${path}`, data, {
@@ -358,6 +403,26 @@ export async function checkinConceptVip(token: string, userid: string): Promise<
 }
 
 /**
+ * 酷狗概念版每日领取 VIP，自动适配登录平台；首次全失败时切换平台重试一次
+ */
+export async function checkinConceptVip(
+  token: string,
+  userid: string
+): Promise<{ success: boolean; message: string }> {
+  if (!token || !userid) {
+    return { success: false, message: '未配置 Token 或 UserID' };
+  }
+
+  const settings = await getUserSettings();
+  const primary = platformOf(settings);
+  const first = await checkinConceptVipWith(token, userid, primary);
+  if (first.success) return first;
+
+  const second = await checkinConceptVipWith(token, userid, otherPlatform(primary));
+  return second.success ? second : first;
+}
+
+/**
  * 尝试自动执行每日签到（若开启且今日未签）
  * 启动时网络可能尚未就绪，失败自动重试最多 3 次
  */
@@ -400,7 +465,50 @@ const CONCEPT_PPID = '356753938,823673182,967485191';
  */
 const KUGOU_API_SALT = 'OIlwieks28dk2k092lksi2UIkp';
 
-function signGatewayParams(
+/**
+ * 登录平台配置：token 与 appid 必须同平台，VIP 鉴权才会生效。
+ * 3116 = 酷狗概念版（lite），1005 = 酷狗标准版。
+ */
+interface GatewayPlatform {
+  appid: number;
+  clientver: number;
+  signatureSalt: string;
+  trackerKeySalt: string;
+  pageId: number;
+  ppid: string;
+  pid: number;
+}
+
+const PLATFORM_CONCEPT: GatewayPlatform = {
+  appid: CONCEPT_APPID,
+  clientver: CONCEPT_CLIENTVER,
+  signatureSalt: CONCEPT_SIGNATURE_SALT,
+  trackerKeySalt: CONCEPT_TRACKER_KEY_SALT,
+  pageId: CONCEPT_PAGE_ID,
+  ppid: CONCEPT_PPID,
+  pid: 411,
+};
+
+const PLATFORM_STANDARD: GatewayPlatform = {
+  appid: 1005,
+  clientver: 11430,
+  signatureSalt: KUGOU_API_SALT,
+  trackerKeySalt: TRACKER_KEY_SALT,
+  pageId: 151369488,
+  ppid: '463467626,350369493,788954147',
+  pid: 2,
+};
+
+function platformOf(settings: UserSettings): GatewayPlatform {
+  return (settings.kugouAppId || 1005) === CONCEPT_APPID ? PLATFORM_CONCEPT : PLATFORM_STANDARD;
+}
+
+function otherPlatform(platform: GatewayPlatform): GatewayPlatform {
+  return platform === PLATFORM_CONCEPT ? PLATFORM_STANDARD : PLATFORM_CONCEPT;
+}
+
+function signWithSalt(
+  salt: string,
   params: Record<string, string | number>,
   bodyObj?: unknown
 ): string {
@@ -410,7 +518,14 @@ function signGatewayParams(
     .map((k) => `${k}=${params[k]}`)
     .join('');
   const bodyStr = bodyObj ? (typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj)) : '';
-  return md5(`${KUGOU_API_SALT}${sorted}${bodyStr}${KUGOU_API_SALT}`);
+  return md5(`${salt}${sorted}${bodyStr}${salt}`);
+}
+
+function signGatewayParams(
+  params: Record<string, string | number>,
+  bodyObj?: unknown
+): string {
+  return signWithSalt(KUGOU_API_SALT, params, bodyObj);
 }
 
 interface TrackerV5Response {
@@ -445,35 +560,35 @@ function describeMissingVipPermission(
   if (!hasCredentials(settings)) {
     return `《${song.songName}》为 VIP 专享，请先在设置中授权酷狗概念版账号`;
   }
+  if ((settings.kugouAppId || 1005) !== 3116) {
+    // 旧版标准版平台 token：概念版 VIP 鉴权不生效，需重新扫码授权
+    return `《${song.songName}》为 VIP 专享，当前登录的是酷狗标准版平台，请在设置中重新扫码授权概念版账号`;
+  }
   return `《${song.songName}》官方音源无完整播放权限，请确认概念版 VIP 生效且账号未被限制`;
 }
 
 /**
- * 统一音源解析器：走酷狗网关 trackercdn /v5/url
- *
- * 旧实现调用废弃的 /i/v2/ 且缺少 mid 参数，服务端固定返回 "Empty mid"，
- * 导致主轨 100% 失败；备轨候选也复用了同一个坏接口，最终只能依赖第三方镜像。
+ * 按指定平台请求酷狗网关 trackercdn /v5/url
  */
-export async function resolveKugouAudioUrl(
+async function requestTrackerUrl(
   song: KuGouSong,
   settings: UserSettings,
-  quality: number | string = 128
+  quality: number | string,
+  platform: GatewayPlatform
 ): Promise<TrackerAttempt> {
   const hash = (song.hash || '').toLowerCase();
   if (!hash) return { result: null };
 
   const mid = await getDeviceMid();
   const userid = settings.kugouUserId || '0';
-  const isConcept = hasCredentials(settings);
-  const appid = isConcept ? CONCEPT_APPID : 1005;
   const clienttime = Math.floor(Date.now() / 1000);
 
   const params: Record<string, string | number> = {
     dfid: '-',
     mid,
     uuid: '-',
-    appid,
-    clientver: isConcept ? CONCEPT_CLIENTVER : 11430,
+    appid: platform.appid,
+    clientver: platform.clientver,
     clienttime,
     token: settings.kugouToken || '',
     userid: Number(userid) || 0,
@@ -481,33 +596,21 @@ export async function resolveKugouAudioUrl(
     area_code: 1,
     hash,
     ssa_flag: 'is_fromtrack',
-    version: 11430,
-    page_id: isConcept ? CONCEPT_PAGE_ID : 151369488,
+    version: platform.clientver,
+    page_id: platform.pageId,
     quality,
     album_audio_id: Number(song.mixSongId || 0),
     behavior: 'play',
-    pid: isConcept ? 411 : 2,
+    pid: platform.pid,
     cmd: 26,
     pidversion: 3001,
     IsFreePart: 0,
-    ppage_id: isConcept ? CONCEPT_PPID : '463467626,350369493,788954147',
+    ppage_id: platform.ppid,
     cdnBackup: 1,
     module: '',
-    key: md5(
-      `${hash}${
-        isConcept ? CONCEPT_TRACKER_KEY_SALT : TRACKER_KEY_SALT
-      }${appid}${mid}${userid}`
-    ),
+    key: md5(`${hash}${platform.trackerKeySalt}${platform.appid}${mid}${userid}`),
   };
-  params.signature = isConcept
-    ? md5(
-        `${CONCEPT_SIGNATURE_SALT}${Object.keys(params)
-          .filter((k) => k !== 'signature')
-          .sort()
-          .map((k) => `${k}=${params[k]}`)
-          .join('')}${CONCEPT_SIGNATURE_SALT}`
-      )
-    : signGatewayParams(params);
+  params.signature = signWithSalt(platform.signatureSalt, params);
 
   try {
     const res = await httpGet<TrackerV5Response>('https://gateway.kugou.com/v5/url', params, {
@@ -544,10 +647,31 @@ export async function resolveKugouAudioUrl(
     }
     return { result: null, errorCode: res?.error_code, errorMsg: res?.error_msg };
   } catch (err) {
-    console.warn('[resolveKugouAudioUrl] 音源解析异常:', err);
+    console.warn('[requestTrackerUrl] 音源解析异常:', err);
   }
 
   return { result: null };
+}
+
+/**
+ * 统一音源解析器：走酷狗网关 trackercdn /v5/url
+ *
+ * 优先使用登录平台参数（token 与 appid 同平台，VIP 鉴权才会生效）；
+ * 若返回 error_code 20018（token 与 appid 平台不匹配，如旧版标准版 token），
+ * 自动用另一平台参数重试一次。
+ */
+export async function resolveKugouAudioUrl(
+  song: KuGouSong,
+  settings: UserSettings,
+  quality: number | string = 128
+): Promise<TrackerAttempt> {
+  const primary = hasCredentials(settings) ? platformOf(settings) : PLATFORM_STANDARD;
+  const attempt = await requestTrackerUrl(song, settings, quality, primary);
+  if (attempt.result || attempt.errorCode !== 20018) {
+    return attempt;
+  }
+  console.info('[resolveKugouAudioUrl] token 与登录平台不匹配 (20018)，切换平台重试');
+  return requestTrackerUrl(song, settings, quality, otherPlatform(primary));
 }
 
 /**

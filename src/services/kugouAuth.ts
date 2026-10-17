@@ -9,10 +9,10 @@ import { httpGet } from './http';
 
 const SIGNATURE_WEB_SECRET = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
 
-// 酷狗 Android 客户端 appid / clientver（网关接口需与登录态所属 appid 一致）
-const KUGOU_ANDROID_APPID = 1005;
-// 二维码创建接口使用的 appid（酷狗官方 Android 端取值）
-const KUGOU_QRCODE_APPID = 1001;
+// 酷狗概念版 appid（网关接口需与登录态所属 appid 一致，VIP 鉴权按平台校验）
+const KUGOU_ANDROID_APPID = 3116;
+// 二维码创建接口使用的 appid（与登录态同平台，扫码后签发概念版 token）
+const KUGOU_QRCODE_APPID = 3116;
 
 export interface QrCodeKeyResult {
   qrcode: string;

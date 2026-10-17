@@ -4,7 +4,13 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import type { AudioSourceResult, KuGouPlaylist, KuGouSong, LyricLine, PlayMode, UserSettings } from '../types/music';
-import { fetchConceptVipStatus, getUserSettings, resolveAudioSource, tryAutoCheckin } from '../services/audioSource';
+import {
+  fetchConceptVipStatus,
+  getUserSettings,
+  resolveAudioSource,
+  tryAutoCheckin,
+  keepTokenAlive,
+} from '../services/audioSource';
 import {
   deleteLocalPlaylist,
   getLocalPlaylists,
@@ -49,7 +55,7 @@ interface PlayerContextType {
   isLoadingAudio: boolean;
   audioSourceInfo: AudioSourceResult | null;
   errorMsg: string | null;
-  /** 当前播放队列（来自活动歌单的原始顺序） */
+  /** 独立播放队列（与歌单解耦，仅「播放全部」或手动清空时刷新） */
   queueSongs: KuGouSong[];
   clearQueue: () => Promise<void>;
 
@@ -58,7 +64,9 @@ interface PlayerContextType {
   activeLyricIndex: number;
 
   // 控制动作
-  playSong: (song: KuGouSong, playlist?: KuGouPlaylist) => Promise<void>;
+  playSong: (song: KuGouSong, opts?: { insertFront?: boolean }) => Promise<void>;
+  /** 播放全部：清空并重建独立播放队列，从第一首开始播放 */
+  playAll: (songs: KuGouSong[]) => Promise<void>;
   togglePlay: () => void;
   nextSong: () => void;
   prevSong: () => void;
@@ -80,6 +88,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // 概念版 VIP 实时状态（用于界面打标，验证打卡是否真实到账）
   const [vipStatus, setVipStatus] = useState<{ isVip: boolean; vipEndTime: string } | null>(null);
   const [activePlaylist, setActivePlaylist] = useState<KuGouPlaylist | null>(null);
+  // 独立播放队列：与歌单解耦。仅「播放全部」重建、手动清空清空、
+  // 单曲播放按需插入（搜索结果插最前，其余追加末尾）。切换歌单不影响队列。
+  const [queue, setQueue] = useState<KuGouSong[]>([]);
 
   const [currentSong, setCurrentSong] = useState<KuGouSong | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -161,6 +172,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     playlistId?: string | null;
     song?: KuGouSong | null;
     position?: number;
+    /** 独立播放队列（重启后恢复） */
+    queue?: KuGouSong[] | null;
   }
 
   const savePlaybackPrefs = useCallback(
@@ -203,6 +216,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           if (pl) setActivePlaylist(pl);
         }
       }
+      // 恢复独立播放队列
+      if (saved.queue && saved.queue.length > 0) {
+        setQueue(saved.queue);
+      } else if (saved.song) {
+        setQueue([saved.song]);
+      }
     } catch (e) {
       console.warn('[PlaybackStore] 恢复播放状态失败:', e);
     }
@@ -216,11 +235,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         playMode,
         playlistId: activePlaylist?.id ?? null,
         song: currentSong,
+        queue,
       });
     }, 500);
     return () => clearTimeout(t);
-  }, [volume, playMode, activePlaylist, currentSong, savePlaybackPrefs]);
-
+  }, [volume, playMode, activePlaylist, currentSong, queue, savePlaybackPrefs]);
   // 暂停或退出时保存播放进度
   const currentTimeRef = useRef(0);
   currentTimeRef.current = currentTime;
@@ -344,6 +363,25 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     tryAutoCheckin().catch(() => {});
   }, [refreshPlaylists, refreshUserSettings, syncCloudPlaylists, refreshVipStatus]);
 
+  // Token 保活：酷狗登录态长期无请求会失效。运行期间每 6 小时发一次
+  // 轻量带登录态的请求（VIP 状态查询），尽量延长 token 有效期。
+  useEffect(() => {
+    const ping = async () => {
+      try {
+        const s = await getUserSettings();
+        if (!s.kugouToken || !s.kugouUserId) return;
+        const ok = await keepTokenAlive(s.kugouToken, s.kugouUserId);
+        if (!ok) {
+          console.warn('[TokenKeepAlive] 保活请求失败，token 可能已失效，请重新扫码授权');
+        }
+      } catch {
+        /* 网络异常忽略，下个周期重试 */
+      }
+    };
+    const timer = setInterval(ping, 6 * 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   // 根据当前播放时间定位歌词行
   useEffect(() => {
     if (!lyrics.length) {
@@ -362,12 +400,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [currentTime, lyrics]);
 
   // 播放单曲核心逻辑
-  const playSong = async (song: KuGouSong, playlist?: KuGouPlaylist) => {
+  const playSong = async (song: KuGouSong, opts?: { insertFront?: boolean }) => {
     const requestId = ++playRequestIdRef.current;
-    const targetPlaylist = playlist || activePlaylist;
-    if (targetPlaylist && (!activePlaylist || activePlaylist.id !== targetPlaylist.id)) {
-      setActivePlaylist(targetPlaylist);
-    }
+
+    // 维护独立播放队列：队列中不存在时按需插入
+    // （搜索结果插到最前面，其余场景追加到末尾；已存在则直接播放不重复添加）
+    setQueue((prev) => {
+      if (prev.some((s) => s.hash && s.hash === song.hash)) return prev;
+      return opts?.insertFront ? [song, ...prev] : [...prev, song];
+    });
 
     // 先停掉并卸载旧音源，避免新歌解析失败时继续播放上一首。
     const audio = audioRef.current;
@@ -421,9 +462,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  // 获取下一曲索引
+  // 获取下一曲索引（基于独立播放队列）
   const getNextSongIndex = useCallback((): number => {
-    const queue = [...(activePlaylist?.songs ?? [])].reverse();
     if (queue.length === 0 || !currentSong) return -1;
     const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
     const total = queue.length;
@@ -436,21 +476,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return rand;
     }
     return (currentIndex + 1) % total;
-  }, [activePlaylist, currentSong, playMode]);
+  }, [queue, currentSong, playMode]);
 
   // 下一曲
   const nextSong = useCallback(() => {
-    const queue = [...(activePlaylist?.songs ?? [])].reverse();
     if (queue.length === 0) return;
     const nextIdx = getNextSongIndex();
     if (nextIdx >= 0) {
       playSong(queue[nextIdx]);
     }
-  }, [activePlaylist, getNextSongIndex]);
+  }, [queue, getNextSongIndex]);
 
   // 上一曲
   const prevSong = () => {
-    const queue = [...(activePlaylist?.songs ?? [])].reverse();
     if (queue.length === 0 || !currentSong) return;
     const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
     const total = queue.length;
@@ -458,9 +496,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     playSong(queue[prevIdx]);
   };
 
-  // UI 与切歌都从上到下按“最新添加在前”排序。
-  const queueSongs = [...(activePlaylist?.songs ?? [])].reverse();
+  // 播放列表对外暴露的就是独立播放队列
+  const queueSongs = queue;
 
+  // 播放全部：清空并重建独立播放队列，从第一首开始播放
+  const playAll = async (songs: KuGouSong[]) => {
+    if (!songs || songs.length === 0) return;
+    setQueue([...songs]);
+    await playSong(songs[0]);
+  };
+
+  // 手动清空播放队列（仅停止播放并清空队列，不影响任何歌单）
   const clearQueue = useCallback(async () => {
     playRequestIdRef.current += 1;
     const audio = audioRef.current;
@@ -478,17 +524,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsLoadingAudio(false);
     setCurrentTime(0);
     setDuration(0);
+    setQueue([]);
     // 清空队列时同步移除“上次播放”的恢复记录
-    await savePlaybackPrefs({ song: null, position: 0 });
-
-    if (activePlaylist) {
-      const updated: KuGouPlaylist = { ...activePlaylist, songs: [], totalSongs: 0 };
-      const next = playlists.map((p) => (p.id === updated.id ? updated : p));
-      setPlaylists(next);
-      setActivePlaylist(updated);
-      await saveAllPlaylistsToStorage(next);
-    }
-  }, [activePlaylist, playlists]);
+    await savePlaybackPrefs({ song: null, position: 0, queue: [] });
+  }, [savePlaybackPrefs]);
 
   // 监听歌曲自然播放结束
   useEffect(() => {
@@ -647,11 +686,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (activePlaylist?.id === id) {
       const remaining = playlists.filter((p) => p.id !== id);
       setActivePlaylist(remaining.length > 0 ? remaining[0] : null);
-      if (remaining.length === 0) void clearQueue();
     }
   };
 
   // ===== 键盘快捷键：空格 播放/暂停，←→ 快退/快进 5s，↑↓ 音量 =====
+  // 另支持标准媒体键（车机方向盘 / 蓝牙媒体按键 / 部分键盘）：
+  // MediaPlayPause / MediaTrackNext / MediaTrackPrevious / MediaStop
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -664,6 +704,35 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ) {
         return;
       }
+
+      // 标准媒体键：不受「是否有当前歌曲」限制，切歌/清空队列后仍可响应
+      switch (e.key) {
+        case 'MediaPlayPause':
+          e.preventDefault();
+          togglePlay();
+          return;
+        case 'MediaPlay':
+          e.preventDefault();
+          if (!isPlaying) togglePlay();
+          return;
+        case 'MediaPause':
+          e.preventDefault();
+          if (isPlaying) togglePlay();
+          return;
+        case 'MediaTrackNext':
+          e.preventDefault();
+          nextSong();
+          return;
+        case 'MediaTrackPrevious':
+          e.preventDefault();
+          prevSong();
+          return;
+        case 'MediaStop':
+          e.preventDefault();
+          if (audioRef.current) audioRef.current.pause();
+          return;
+      }
+
       if (!currentSong) return;
 
       switch (e.key) {
@@ -692,7 +761,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentSong, currentTime, duration, volume, isMuted, togglePlay, seek, setVolume]);
+  }, [currentSong, currentTime, duration, volume, isMuted, isPlaying, togglePlay, nextSong, prevSong, seek, setVolume]);
 
   // ===== 系统媒体控制（Media Session）：macOS 控制中心 / 媒体键 =====
   useEffect(() => {
@@ -717,20 +786,24 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     const ms = (navigator as Navigator & { mediaSession?: MediaSession }).mediaSession;
-    if (!ms || !currentSong) return;
-
+    if (!ms) return;
     try {
       ms.setActionHandler('play', () => togglePlay());
       ms.setActionHandler('pause', () => togglePlay());
+      ms.setActionHandler('stop', () => {
+        if (audioRef.current) audioRef.current.pause();
+      });
       ms.setActionHandler('previoustrack', () => prevSong());
       ms.setActionHandler('nexttrack', () => nextSong());
       ms.setActionHandler('seekto', (d) => {
         if (d.seekTime != null) seek(d.seekTime);
       });
+      ms.setActionHandler('seekbackward', () => seek(Math.max(0, currentTime - 10)));
+      ms.setActionHandler('seekforward', () => seek(Math.min(duration || 0, currentTime + 10)));
     } catch {
       // 当前平台不支持的 action 忽略
     }
-  }, [currentSong, togglePlay, prevSong, nextSong, seek]);
+  }, [currentSong, togglePlay, prevSong, nextSong, seek, currentTime, duration]);
 
   return (
     <PlayerContext.Provider
@@ -767,6 +840,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         activeLyricIndex,
 
         playSong,
+        playAll,
         togglePlay,
         nextSong,
         prevSong,
