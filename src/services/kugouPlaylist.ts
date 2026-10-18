@@ -612,18 +612,57 @@ export async function saveAllPlaylistsToStorage(playlists: KuGouPlaylist[]): Pro
 }
 
 /**
- * 酷狗 Android 网关带 Body 的 MD5 签名算法
+ * 登录平台配置：token 与 appid / 签名盐必须同平台，否则网关按未登录拒绝。
+ * 3116 = 酷狗概念版（lite），1005 = 酷狗标准版。
+ * 与 src/services/audioSource.ts 的 GatewayPlatform 保持一致。
+ */
+interface GatewayPlatform {
+  appid: number;
+  clientver: number;
+  signatureSalt: string;
+}
+
+const PLATFORM_STANDARD: GatewayPlatform = {
+  appid: 1005,
+  clientver: 20489,
+  signatureSalt: KUGOU_API_SALT,
+};
+
+const PLATFORM_CONCEPT: GatewayPlatform = {
+  appid: 3116,
+  clientver: 11430,
+  signatureSalt: 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA',
+};
+
+/**
+ * 按登录平台取网关参数。旧版本只存 token/userid 时 kugouAppId 为空，
+ * 此时沿用标准版，保持向后兼容。
+ */
+function platformOfAppId(kugouAppId?: number): GatewayPlatform {
+  return (kugouAppId || 1005) === 3116 ? PLATFORM_CONCEPT : PLATFORM_STANDARD;
+}
+
+/** 换到另一个平台重试（同 audioSource 的降级思路） */
+function otherPlatform(platform: GatewayPlatform): GatewayPlatform {
+  return platform === PLATFORM_CONCEPT ? PLATFORM_STANDARD : PLATFORM_CONCEPT;
+}
+
+/**
+ * 酷狗 Android 网关带 Body 的 MD5 签名算法。
+ * salt 必须与所用 appid 同平台，否则网关返回 20006 签名校验失败。
  */
 function signKuGouAndroidBody(
   params: Record<string, string | number>,
-  bodyObj: unknown
+  bodyObj: unknown,
+  salt: string = KUGOU_API_SALT
 ): string {
   const sortedPairs = Object.keys(params)
+    .filter((key) => key !== 'signature')
     .sort()
     .map((key) => `${key}=${params[key]}`);
   const paramsStr = sortedPairs.join('');
   const bodyStr = bodyObj ? (typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj)) : '';
-  return md5(`${KUGOU_API_SALT}${paramsStr}${bodyStr}${KUGOU_API_SALT}`);
+  return md5(`${salt}${paramsStr}${bodyStr}${salt}`);
 }
 
 const DEFAULT_GATEWAY_HEADERS = {
@@ -711,38 +750,14 @@ export async function searchKuGouSongs(
  */
 export async function fetchUserCloudPlaylists(
   token: string,
-  userid: string
+  userid: string,
+  kugouAppId?: number
 ): Promise<KuGouPlaylist[]> {
   if (!token || !userid) return [];
 
-  const timestamp = Math.floor(Date.now() / 1000);
   const mid = await getDeviceMid();
-
-  const params: Record<string, string | number> = {
-    appid: 1005,
-    clienttime: timestamp,
-    clientver: 20489,
-    dfid: '-',
-    mid,
-    plat: 1,
-    token,
-    userid: Number(userid),
-    uuid: '-',
-  };
-
-  const body = {
-    userid: Number(userid),
-    token,
-    total_ver: 979,
-    type: 2,
-    page: 1,
-    pagesize: 50,
-  };
-
-  const signature = signKuGouAndroidBody(params, body);
-  params.signature = signature;
-
   const url = 'https://gateway.kugou.com/cloudlist.service/v7/get_all_list';
+
   interface GetAllListResponse {
     status: number;
     error_code?: number;
@@ -768,16 +783,58 @@ export async function fetchUserCloudPlaylists(
     };
   }
 
-  const res = await httpPost<GetAllListResponse>(url, body, {
-    query: params,
-    headers: {
-      ...DEFAULT_GATEWAY_HEADERS,
-      clienttime: String(timestamp),
+  /**
+   * 组装一次请求。appid / clientver / 签名盐必须与登录平台同源，
+   * 否则网关会按「未登录」返回 20017。
+   */
+  const requestOnce = async (
+    platform: GatewayPlatform
+  ): Promise<GetAllListResponse | null> => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      appid: platform.appid,
+      clienttime: timestamp,
+      clientver: platform.clientver,
+      dfid: '-',
       mid,
+      plat: 1,
       token,
-      userid,
-    },
-  });
+      userid: Number(userid),
+      uuid: '-',
+    };
+
+    const body = {
+      userid: Number(userid),
+      token,
+      total_ver: 979,
+      type: 2,
+      page: 1,
+      pagesize: 50,
+    };
+
+    params.signature = signKuGouAndroidBody(params, body, platform.signatureSalt);
+
+    return httpPost<GetAllListResponse>(url, body, {
+      query: params,
+      headers: {
+        ...DEFAULT_GATEWAY_HEADERS,
+        clienttime: String(timestamp),
+        mid,
+        token,
+        userid,
+      },
+    });
+  };
+
+  const platform = platformOfAppId(kugouAppId);
+  let res = await requestOnce(platform);
+
+  // 20017 = 登录态不被接受：换成另一平台的 appid/盐再试一次。
+  // 历史 token 可能来自标准版平台，而设置里已标记为概念版。
+  if (!res || res.status !== 1) {
+    const retry = await requestOnce(otherPlatform(platform));
+    if (retry && retry.status === 1) res = retry;
+  }
 
   // 网关返回 status !== 1 时抛出真实错误，避免 UI 误显示为「暂无云端歌单」
   if (!res || res.status !== 1) {
@@ -820,7 +877,8 @@ export async function fetchUserCloudPlaylists(
 export async function fetchUserCloudPlaylistTracks(
   listId: string,
   token: string,
-  userid: string
+  userid: string,
+  kugouAppId?: number
 ): Promise<KuGouSong[]> {
   const mid = await getDeviceMid();
   const PAGE_SIZE = 300;
@@ -883,12 +941,15 @@ export async function fetchUserCloudPlaylistTracks(
       .filter((s) => Boolean(s.hash));
 
   // 单页请求：clienttime 与签名必须按页重新计算
-  const fetchPage = async (page: number): Promise<TrackListResponse | null> => {
+  const fetchPage = async (
+    page: number,
+    platform: GatewayPlatform
+  ): Promise<TrackListResponse | null> => {
     const timestamp = Math.floor(Date.now() / 1000);
     const params: Record<string, string | number> = {
-      appid: 1005,
+      appid: platform.appid,
       clienttime: timestamp,
-      clientver: 20489,
+      clientver: platform.clientver,
       dfid: '-',
       mid,
       plat: 1,
@@ -909,8 +970,7 @@ export async function fetchUserCloudPlaylistTracks(
       token,
     };
 
-    const signature = signKuGouAndroidBody(params, body);
-    params.signature = signature;
+    params.signature = signKuGouAndroidBody(params, body, platform.signatureSalt);
 
     return httpPost<TrackListResponse>(url, body, {
       query: params,
@@ -924,6 +984,20 @@ export async function fetchUserCloudPlaylistTracks(
     });
   };
 
+  /**
+   * 在给定平台下取一页；若整页被网关按登录态拒绝（20017/20006），
+   * 用另一平台再试一次。历史 token 可能来自标准版平台。
+   */
+  const fetchPageResilient = async (page: number): Promise<TrackListResponse | null> => {
+    const platform = platformOfAppId(kugouAppId);
+    let res = await fetchPage(page, platform);
+    if (res && res.status !== 1 && (res.error_code === 20017 || res.error_code === 20006)) {
+      const retry = await fetchPage(page, otherPlatform(platform));
+      if (retry && retry.status === 1) res = retry;
+    }
+    return res;
+  };
+
   const all: KuGouSong[] = [];
 
 
@@ -934,7 +1008,7 @@ export async function fetchUserCloudPlaylistTracks(
       let pageOk = false;
       for (let attempt = 0; attempt < 3 && !pageOk; attempt++) {
         try {
-          res = await fetchPage(page);
+          res = await fetchPageResilient(page);
           if (res && res.status === 1) {
             pageOk = true;
           } else {
@@ -976,28 +1050,14 @@ export async function addSongToUserCloudPlaylist(
   song: KuGouSong,
   listId: string,
   token: string,
-  userid: string
+  userid: string,
+  kugouAppId?: number
 ): Promise<{ success: boolean; message: string }> {
   if (!token || !userid || !listId) {
     return { success: false, message: '缺少登录态或歌单 ID' };
   }
 
-  const timestamp = Math.floor(Date.now() / 1000);
   const mid = await getDeviceMid();
-
-  const params: Record<string, string | number> = {
-    appid: 1005,
-    clienttime: timestamp,
-    clientver: 20489,
-    dfid: '-',
-    last_area: 'gztx',
-    last_time: timestamp,
-    mid,
-    plat: 1,
-    token,
-    userid: Number(userid),
-    uuid: '-',
-  };
 
   const body = {
     userid: Number(userid),
@@ -1022,25 +1082,50 @@ export async function addSongToUserCloudPlaylist(
     ],
   };
 
-  const signature = signKuGouAndroidBody(params, body);
-  params.signature = signature;
-
   const url = 'https://gateway.kugou.com/cloudlist.service/v6/add_song';
+
+  /** appid / clientver / 签名盐必须与登录平台同源，否则网关按未登录拒绝 */
+  const requestOnce = async (
+    platform: GatewayPlatform
+  ): Promise<{ status: number; error_code?: number; error?: string } | null> => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      appid: platform.appid,
+      clienttime: timestamp,
+      clientver: platform.clientver,
+      dfid: '-',
+      last_area: 'gztx',
+      last_time: timestamp,
+      mid,
+      plat: 1,
+      token,
+      userid: Number(userid),
+      uuid: '-',
+    };
+    params.signature = signKuGouAndroidBody(params, body, platform.signatureSalt);
+
+    return httpPost<{ status: number; error_code?: number; error?: string }>(url, body, {
+      query: params,
+      headers: {
+        ...DEFAULT_GATEWAY_HEADERS,
+        clienttime: String(timestamp),
+        mid,
+        token,
+        userid,
+      },
+    });
+  };
+
   try {
-    const res = await httpPost<{ status: number; error_code?: number; error?: string }>(
-      url,
-      body,
-      {
-        query: params,
-        headers: {
-          ...DEFAULT_GATEWAY_HEADERS,
-          clienttime: String(timestamp),
-          mid,
-          token,
-          userid,
-        },
+    const platform = platformOfAppId(kugouAppId);
+    let res = await requestOnce(platform);
+
+    if (res && res.status !== 1 && res.error_code !== 0) {
+      if (res.error_code === 20017 || res.error_code === 20006) {
+        const retry = await requestOnce(otherPlatform(platform));
+        if (retry && (retry.status === 1 || retry.error_code === 0)) res = retry;
       }
-    );
+    }
 
     if (res && (res.status === 1 || res.error_code === 0)) {
       return { success: true, message: '已成功添加并同步至酷狗账号！' };

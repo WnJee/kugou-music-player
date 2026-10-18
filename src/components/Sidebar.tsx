@@ -1,18 +1,11 @@
 /**
  * 侧边栏组件 (src/components/Sidebar.tsx)
- * 适配平板横屏与桌面端，提供歌单切换、导入与扫码登录入口，并区分自建云端歌单与本地导入歌单
+ * 结构：衬线品牌名 + 单行操作条 + 两段歌单列表。
+ * 选中态用 2px 赭橙竖条，不用整块彩色填充。
  */
 
 import React, { useState } from 'react';
-import {
-  Disc3,
-  FolderPlus,
-  Music2,
-  QrCode,
-  RefreshCw,
-  Trash2,
-  User,
-} from 'lucide-react';
+import { FolderPlus, Loader2, QrCode, RefreshCw, Trash2 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import type { KuGouPlaylist } from '../types/music';
 
@@ -21,71 +14,82 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-/**
- * 歌单列表项组件（复用逻辑，避免重复代码）
- */
+/** 封面缺图时用歌单首字，避免一面通用的音符图标 */
+const CoverFallback: React.FC<{ name: string; size: number }> = ({ name, size }) => (
+  <span
+    className="cover-ph"
+    style={{ width: size, height: size, borderRadius: 'var(--r-1)', fontSize: size * 0.42 }}
+    aria-hidden
+  >
+    {name.trim().charAt(0) || '·'}
+  </span>
+);
+
 const PlaylistItem: React.FC<{
   playlist: KuGouPlaylist;
   isActive: boolean;
   isPlayingSong: boolean;
+  isPlaying: boolean;
   onSelect: () => void;
   onDelete?: () => void;
-}> = ({ playlist, isActive, isPlayingSong, onSelect, onDelete }) => (
-  <div
+}> = ({ playlist, isActive, isPlayingSong, isPlaying, onSelect, onDelete }) => (
+  <button
+    type="button"
     onClick={onSelect}
-    className={`group relative flex items-center gap-3 p-2 rounded-xl cursor-pointer border transition-all duration-200 ${
-      isActive
-        ? 'bg-cyan-500/10 border-cyan-500/30 text-white shadow-sm shadow-cyan-500/10'
-        : 'bg-white/[0.02] hover:bg-white/[0.06] border-transparent text-zinc-400 hover:text-zinc-200'
-    }`}
+    className="rail-item group"
+    data-active={isActive}
+    aria-current={isActive ? 'true' : undefined}
   >
-    {/* 封面图 */}
-    <div className="relative w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-zinc-800">
+    <span className="relative shrink-0" style={{ lineHeight: 0 }}>
       {playlist.coverUrl ? (
         <img
           src={playlist.coverUrl}
-          alt={playlist.name}
-          className="w-full h-full object-cover"
+          alt=""
+          className="row-cover"
+          style={{ width: 32, height: 32, borderRadius: 'var(--r-1)' }}
           loading="lazy"
         />
       ) : (
-        <div className="w-full h-full flex items-center justify-center bg-zinc-800 text-zinc-500">
-          <Music2 className="w-4 h-4" />
-        </div>
+        <CoverFallback name={playlist.name} size={32} />
       )}
-
-      {/* 正在播放动态指示器 */}
       {isActive && isPlayingSong && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center gap-0.5">
-          <span className="w-1 h-3 bg-cyan-400 rounded-full animate-pulse" />
-          <span className="w-1 h-4 bg-cyan-400 rounded-full animate-pulse delay-75" />
-          <span className="w-1 h-2 bg-cyan-400 rounded-full animate-pulse delay-150" />
-        </div>
+        <span
+          className="bars absolute inset-0 m-auto"
+          data-paused={!isPlaying}
+          style={{ width: 9, justifyContent: 'center' }}
+        />
       )}
-    </div>
+    </span>
 
-    {/* 歌单名称与曲目数 */}
-    <div className="flex-1 min-w-0">
-      <h3 className="text-xs font-medium truncate">{playlist.name}</h3>
-      <p className="text-[11px] text-zinc-500 mt-0.5 truncate">
-        {playlist.totalSongs} 首单曲
-      </p>
-    </div>
+    <span className="min-w-0 flex-1">
+      <span className="name block">{playlist.name}</span>
+      <span className="sub block mono">
+        {String(playlist.totalSongs).padStart(2, '0')} 首
+      </span>
+    </span>
 
-    {/* 删除按钮（仅本地导入歌单显示） */}
     {onDelete && (
-      <button
+      <span
+        role="button"
+        tabIndex={0}
+        title="移除歌单"
         onClick={(e) => {
           e.stopPropagation();
           onDelete();
         }}
-        title="移除歌单"
-        className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/20 text-zinc-500 hover:text-red-400 transition-all duration-150"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+            onDelete();
+          }
+        }}
+        className="icon-btn opacity-0 transition-opacity group-hover:opacity-100"
+        style={{ width: 24, height: 24 }}
       >
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
+        <Trash2 size={13} strokeWidth={1.6} />
+      </span>
     )}
-  </div>
+  </button>
 );
 
 export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }) => {
@@ -103,168 +107,155 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
     cloudSyncError,
   } = usePlayer();
 
-  // 待确认删除的歌单 ID（Tauri WebView 不支持原生 window.confirm，改用内联确认）
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // 区分酷狗账号自建/收藏歌单 与 本地额外导入歌单
   const userOwnedPlaylists = playlists.filter((p) => p.isUserOwned);
   const importedPlaylists = playlists.filter((p) => !p.isUserOwned);
 
   return (
-    <aside className="hidden md:flex flex-col w-64 lg:w-72 h-full bg-zinc-900/60 backdrop-blur-2xl border-r border-white/10 p-4 shrink-0 select-none">
-      {/* 品牌 Logo 与标题 */}
-      <div className="flex items-center gap-3 px-2 py-3 mb-4">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-          <Music2 className="w-6 h-6 text-white" />
+    <aside className="rail">
+      {/* 品牌：衬线标题靠字重与字距立骨，不靠渐变块 */}
+      <div className="brand">
+        <div className="brand-mark">
+          <span className="brand-name">酷狗播放器</span>
+          {vipStatus?.isVip && (
+            <span
+              className="mono"
+              title={vipStatus.vipEndTime ? `会员到期 ${vipStatus.vipEndTime}` : '会员生效中'}
+              style={{ fontSize: 'var(--fs-1)', color: 'var(--accent-ink)', letterSpacing: '0.1em' }}
+            >
+              VIP
+            </span>
+          )}
         </div>
-        <div>
-          <h1 className="font-bold text-base tracking-wide bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
-            酷狗无损播放器
-          </h1>
-          <span className="text-[11px] text-cyan-400/80 font-medium tracking-wider uppercase">
-            Pure Client · Tauri v2
-          </span>
-        </div>
+        <div className="brand-sub">无损 · 本地直连</div>
       </div>
 
-      {/* 快捷操作区：导入歌单 与 扫码授权（样式完全统一，无冗余说明） */}
-      <div className="grid grid-cols-2 gap-2 mb-5">
-        <button
-          onClick={onOpenImport}
-          className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-white font-medium text-xs shadow-sm active:scale-[0.98] transition-all"
-        >
-          <FolderPlus className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span className="truncate">导入歌单</span>
+      {/* 操作条：两个动作共用一条横向分隔，不各占一个圆角卡 */}
+      <div className="rail-actions">
+        <button type="button" onClick={onOpenImport} className="rail-action">
+          <FolderPlus size={14} strokeWidth={1.6} className="shrink-0" />
+          <span className="truncate">导入</span>
         </button>
-
-        <button
-          onClick={onOpenSettings}
-          className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-white font-medium text-xs shadow-sm active:scale-[0.98] transition-all"
-        >
+        <button type="button" onClick={onOpenSettings} className="rail-action">
           {userSettings?.kugouToken ? (
             <>
               {userSettings.avatar ? (
                 <img
                   src={userSettings.avatar}
-                  alt={userSettings.nickname}
-                  className="w-4 h-4 rounded-full object-cover shrink-0"
+                  alt=""
+                  className="shrink-0 rounded-full object-cover"
+                  style={{ width: 15, height: 15 }}
                 />
               ) : (
-                <User className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="dot shrink-0" data-tone="ok" />
               )}
               <span className="truncate">{userSettings.nickname || '已授权'}</span>
-              {vipStatus?.isVip && (
-                <span
-                  title={vipStatus.vipEndTime ? `概念版 VIP 到期：${vipStatus.vipEndTime}` : '概念版 VIP 生效中'}
-                  className="shrink-0 px-1 py-px rounded text-[8px] font-bold text-amber-300 bg-amber-500/20 border border-amber-500/40"
-                >
-                  VIP
-                </span>
-              )}
             </>
           ) : (
             <>
-              <QrCode className="w-4 h-4 text-cyan-400 shrink-0" />
-              <span className="truncate">扫码授权</span>
+              <QrCode size={14} strokeWidth={1.6} className="shrink-0" />
+              <span className="truncate">扫码登录</span>
             </>
           )}
         </button>
       </div>
 
-      {/* 歌单列表滚动区域 */}
-      <div className="flex-1 overflow-y-auto space-y-5 pr-1 -mr-1 custom-scrollbar">
-        {/* 分区 1：酷狗账号歌单 */}
-        <div>
-          <div className="flex items-center justify-between px-2 mb-2">
-            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-              酷狗账号歌单 ({userOwnedPlaylists.length})
+      <div className="rail-scroll">
+        {/* 分区 1：云端歌单 */}
+        <section className="rail-section">
+          <div className="rail-head">
+            <span>账号歌单</span>
+            <span className="flex items-center gap-1">
+              <span className="count">{String(userOwnedPlaylists.length).padStart(2, '0')}</span>
+              {userSettings?.kugouToken && (
+                <button
+                  type="button"
+                  onClick={() => syncCloudPlaylists(true)}
+                  disabled={isSyncingCloud}
+                  title="重新同步云端歌单"
+                  className="icon-btn"
+                  style={{ width: 20, height: 20, color: 'var(--ink-3)' }}
+                >
+                  {isSyncingCloud ? (
+                    <Loader2 size={12} className="spin" strokeWidth={1.8} />
+                  ) : (
+                    <RefreshCw size={12} strokeWidth={1.6} />
+                  )}
+                </button>
+              )}
             </span>
-            {userSettings?.kugouToken && (
-              <button
-                onClick={() => syncCloudPlaylists(true)}
-                disabled={isSyncingCloud}
-                title="重新同步云端歌单"
-                className="p-1 rounded hover:bg-white/10 text-zinc-500 hover:text-cyan-400 transition-colors"
-              >
-                <RefreshCw
-                  className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin text-cyan-400' : ''}`}
-                />
-              </button>
-            )}
           </div>
 
           {!userSettings?.kugouToken ? (
-            <div
-              onClick={onOpenSettings}
-              className="p-3 rounded-xl bg-white/[0.02] border border-dashed border-white/10 text-center cursor-pointer hover:bg-white/[0.05] transition-colors"
-            >
-              <p className="text-[11px] text-zinc-400">点击扫码授权同步账号歌单</p>
-            </div>
+            <button type="button" onClick={onOpenSettings} className="rail-empty">
+              未登录。扫码后可同步账号歌单与会员权益 →
+            </button>
           ) : userOwnedPlaylists.length === 0 ? (
-            <div className="p-3 text-center text-xs text-zinc-500">
+            <p className="rail-empty">
               {isSyncingCloud ? (
-                '正在同步账号歌单...'
+                '正在同步账号歌单…'
               ) : cloudSyncError ? (
-                <span className="text-amber-400/90 leading-relaxed">同步失败：{cloudSyncError}</span>
+                <span style={{ color: 'var(--warn)' }}>同步失败：{cloudSyncError}</span>
               ) : (
-                '暂无云端歌单，可点击上方刷新同步'
+                '账号下暂无歌单'
               )}
-            </div>
+            </p>
           ) : (
-            <div className="space-y-1">
+            <div>
               {userOwnedPlaylists.map((playlist) => (
                 <PlaylistItem
                   key={playlist.id}
                   playlist={playlist}
                   isActive={activePlaylist?.id === playlist.id}
                   isPlayingSong={Boolean(currentSong && isPlaying)}
+                  isPlaying={isPlaying}
                   onSelect={() => selectPlaylist(playlist)}
                 />
               ))}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* 分区 2：本地导入歌单 */}
-        <div>
-          <div className="flex items-center justify-between px-2 mb-2">
-            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-              本地导入歌单 ({importedPlaylists.length})
-            </span>
+        {/* 分区 2：本地歌单 */}
+        <section className="rail-section">
+          <div className="rail-head">
+            <span>本地导入</span>
+            <span className="count">{String(importedPlaylists.length).padStart(2, '0')}</span>
           </div>
 
           {importedPlaylists.length === 0 ? (
-            <div
-              onClick={onOpenImport}
-              className="p-3 rounded-xl bg-white/[0.02] border border-dashed border-white/10 text-center cursor-pointer hover:bg-white/[0.05] transition-colors"
-            >
-              <Disc3 className="w-5 h-5 text-zinc-500 mx-auto mb-1 stroke-[1.5]" />
-              <p className="text-[11px] text-zinc-400">暂无导入歌单，点击上方导入</p>
-            </div>
+            <button type="button" onClick={onOpenImport} className="rail-empty">
+              还没有导入歌单。粘贴分享链接或酷狗码 →
+            </button>
           ) : (
-            <div className="space-y-1">
+            <div>
               {importedPlaylists.map((playlist) =>
                 pendingDeleteId === playlist.id ? (
-                  <div
-                    key={playlist.id}
-                    className="p-2 rounded-xl bg-red-500/10 border border-red-500/25 space-y-2"
-                  >
-                    <p className="text-[11px] text-red-200 leading-relaxed px-1">
-                      移除歌单《{playlist.name}》？
+                  <div key={playlist.id} className="px-4 py-2.5" style={{ background: 'var(--lift)' }}>
+                    <p
+                      className="truncate"
+                      style={{ fontSize: 'var(--fs-2)', color: 'var(--ink-1)' }}
+                    >
+                      移除《{playlist.name}》？
                     </p>
-                    <div className="flex items-center gap-1.5 px-1">
+                    <div className="mt-2 flex items-center gap-1.5">
                       <button
+                        type="button"
                         onClick={() => setPendingDeleteId(null)}
-                        className="flex-1 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-[11px] transition-colors"
+                        className="btn"
+                        style={{ height: 26, padding: '0 9px', fontSize: 'var(--fs-1)' }}
                       >
                         取消
                       </button>
                       <button
+                        type="button"
                         onClick={() => {
                           setPendingDeleteId(null);
                           deletePlaylistById(playlist.id);
                         }}
-                        className="flex-1 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-300 text-[11px] font-medium transition-colors"
+                        className="btn btn-danger"
+                        style={{ height: 26, padding: '0 9px', fontSize: 'var(--fs-1)' }}
                       >
                         移除
                       </button>
@@ -276,6 +267,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
                     playlist={playlist}
                     isActive={activePlaylist?.id === playlist.id}
                     isPlayingSong={Boolean(currentSong && isPlaying)}
+                    isPlaying={isPlaying}
                     onSelect={() => selectPlaylist(playlist)}
                     onDelete={() => setPendingDeleteId(playlist.id)}
                   />
@@ -283,9 +275,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenImport, onOpenSettings }
               )}
             </div>
           )}
-        </div>
+        </section>
       </div>
     </aside>
   );
 };
-

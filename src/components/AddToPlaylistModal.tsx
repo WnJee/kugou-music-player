@@ -1,10 +1,10 @@
 /**
  * 添加歌曲至歌单弹窗 (src/components/AddToPlaylistModal.tsx)
- * 支持将搜索或正在播放的歌曲添加至酷狗云端账号歌单或本地导入歌单，并自动同步酷狗云端
+ * 列表式选择项：序号/封面 + 名称 + 曲目数。没有彩色 icon 分组标题。
  */
 
 import React, { useState } from 'react';
-import { Check, Cloud, Folder, FolderPlus, Loader2, Music2, X } from 'lucide-react';
+import { Check, Loader2, X } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import type { KuGouPlaylist, KuGouSong } from '../types/music';
 
@@ -13,6 +13,43 @@ interface AddToPlaylistModalProps {
   song: KuGouSong | null;
   onClose: () => void;
 }
+
+const PickRow: React.FC<{
+  playlist: KuGouPlaylist;
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}> = ({ playlist, busy, disabled, onClick }) => (
+  <button type="button" className="pick" disabled={disabled} onClick={onClick}>
+    {playlist.coverUrl ? (
+      <img
+        src={playlist.coverUrl}
+        alt=""
+        className="shrink-0 object-cover"
+        style={{ width: 32, height: 32, borderRadius: 'var(--r-1)' }}
+        loading="lazy"
+      />
+    ) : (
+      <span
+        className="cover-ph"
+        data-size="sm" style={{ width: 32, height: 32, borderRadius: 'var(--r-1)' }}
+        aria-hidden
+      >
+        {playlist.name.trim().charAt(0) || '·'}
+      </span>
+    )}
+    <span className="min-w-0 flex-1">
+      <span className="block truncate" style={{ fontSize: 'var(--fs-3)', color: 'var(--ink-0)' }}>
+        {playlist.name}
+      </span>
+      <span className="mono block" style={{ fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}>
+        {String(playlist.totalSongs).padStart(2, '0')} 首
+        {playlist.isUserOwned ? ' · 同步云端' : ''}
+      </span>
+    </span>
+    {busy && <Loader2 size={14} className="spin shrink-0" style={{ color: 'var(--accent-ink)' }} />}
+  </button>
+);
 
 export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({
   isOpen,
@@ -46,129 +83,84 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in select-none">
-      <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-white/10 p-5 shadow-2xl text-white relative max-h-[85vh] flex flex-col">
-        {/* 关闭按钮 */}
-        <button
-          onClick={onClose}
-          className="absolute right-4 top-4 p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        {/* 标题 */}
-        <div className="flex items-center gap-2.5 mb-4 pr-6">
-          <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
-            <FolderPlus className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-bold truncate">添加到歌单</h2>
-            <p className="text-[11px] text-zinc-400 truncate">
-              {song.singerName} - {song.songName}
+    <div className="overlay" onClick={onClose} role="presentation">
+      <div
+        className="sheet"
+        style={{ maxWidth: 400 }}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="添加到歌单"
+      >
+        <div className="sheet-head-row">
+          <div className="min-w-0 flex-1">
+            <h2 className="sheet-title">加入歌单</h2>
+            <p className="sheet-sub truncate">
+              {song.singerName} — {song.songName}
             </p>
           </div>
+          <button type="button" onClick={onClose} className="icon-btn" title="关闭">
+            <X size={16} strokeWidth={1.8} />
+          </button>
         </div>
 
-        {/* 状态提示 */}
-        {toastMsg && (
-          <div className="mb-3 px-3 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs flex items-center gap-2 animate-in fade-in">
-            <Check className="w-4 h-4 text-cyan-400 shrink-0" />
-            <span className="truncate">{toastMsg}</span>
-          </div>
-        )}
+        <div className="sheet-body">
+          {toastMsg && (
+            <div className="notice mb-3" data-tone="ok">
+              <Check size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+              <span>{toastMsg}</span>
+            </div>
+          )}
 
-        {/* 歌单选择列表 */}
-        <div className="flex-1 overflow-y-auto space-y-4 custom-scrollbar pr-1 -mr-1">
           {playlists.length === 0 ? (
-            <div className="py-8 text-center text-xs text-zinc-500">
-              暂无可用歌单，请先在左侧导入或同步歌单
+            <div className="empty" style={{ padding: '24px 0', maxWidth: 'none' }}>
+              <p className="empty-title" style={{ fontSize: 'var(--fs-4)' }}>
+                还没有可用的歌单
+              </p>
+              <p className="empty-body" style={{ marginTop: 6 }}>
+                先在左侧导入一个歌单，或扫码登录同步账号歌单。
+              </p>
             </div>
           ) : (
             <>
-              {/* 酷狗账号云端歌单 */}
               {userOwnedPlaylists.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-1.5 px-1 mb-2 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-                    <Cloud className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>酷狗账号歌单 (自动同步云端)</span>
-                  </div>
-                  <div className="space-y-1">
-                    {userOwnedPlaylists.map((pl) => (
-                      <button
-                        key={pl.id}
-                        disabled={addingPlaylistId === pl.id}
-                        onClick={() => handleSelectPlaylist(pl)}
-                        className="w-full flex items-center gap-3 p-2 rounded-xl bg-white/[0.02] hover:bg-white/[0.08] active:scale-[0.99] border border-transparent hover:border-cyan-500/30 text-left transition-all"
-                      >
-                        <div className="w-9 h-9 rounded-lg overflow-hidden bg-zinc-800 shrink-0 border border-white/5">
-                          {pl.coverUrl ? (
-                            <img
-                              src={pl.coverUrl}
-                              alt={pl.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-zinc-500">
-                              <Music2 className="w-4 h-4" />
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h4 className="text-xs font-medium text-white truncate">{pl.name}</h4>
-                          <p className="text-[10px] text-zinc-500 truncate mt-0.5">
-                            {pl.totalSongs} 首单曲
-                          </p>
-                        </div>
-                        {addingPlaylistId === pl.id && (
-                          <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <section>
+                  <p className="microcaps" style={{ marginBottom: 4 }}>
+                    账号歌单
+                  </p>
+                  {userOwnedPlaylists.map((pl) => (
+                    <PickRow
+                      key={pl.id}
+                      playlist={pl}
+                      busy={addingPlaylistId === pl.id}
+                      disabled={Boolean(addingPlaylistId)}
+                      onClick={() => handleSelectPlaylist(pl)}
+                    />
+                  ))}
+                </section>
               )}
 
-              {/* 本地导入歌单 */}
               {importedPlaylists.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-1.5 px-1 mb-2 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-                    <Folder className="w-3.5 h-3.5 text-blue-400" />
-                    <span>本地导入歌单</span>
-                  </div>
-                  <div className="space-y-1">
-                    {importedPlaylists.map((pl) => (
-                      <button
-                        key={pl.id}
-                        disabled={addingPlaylistId === pl.id}
-                        onClick={() => handleSelectPlaylist(pl)}
-                        className="w-full flex items-center gap-3 p-2 rounded-xl bg-white/[0.02] hover:bg-white/[0.08] active:scale-[0.99] border border-transparent hover:border-blue-500/30 text-left transition-all"
-                      >
-                        <div className="w-9 h-9 rounded-lg overflow-hidden bg-zinc-800 shrink-0 border border-white/5">
-                          {pl.coverUrl ? (
-                            <img
-                              src={pl.coverUrl}
-                              alt={pl.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-zinc-500">
-                              <Music2 className="w-4 h-4" />
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h4 className="text-xs font-medium text-white truncate">{pl.name}</h4>
-                          <p className="text-[10px] text-zinc-500 truncate mt-0.5">
-                            {pl.totalSongs} 首单曲
-                          </p>
-                        </div>
-                        {addingPlaylistId === pl.id && (
-                          <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <section
+                  style={{
+                    marginTop: userOwnedPlaylists.length > 0 ? 14 : 0,
+                    paddingTop: userOwnedPlaylists.length > 0 ? 12 : 0,
+                    borderTop: userOwnedPlaylists.length > 0 ? '1px solid var(--line-soft)' : 0,
+                  }}
+                >
+                  <p className="microcaps" style={{ marginBottom: 4 }}>
+                    本地导入
+                  </p>
+                  {importedPlaylists.map((pl) => (
+                    <PickRow
+                      key={pl.id}
+                      playlist={pl}
+                      busy={addingPlaylistId === pl.id}
+                      disabled={Boolean(addingPlaylistId)}
+                      onClick={() => handleSelectPlaylist(pl)}
+                    />
+                  ))}
+                </section>
               )}
             </>
           )}

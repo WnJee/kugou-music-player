@@ -304,7 +304,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsSyncingCloud(true);
     setCloudSyncError(null);
     try {
-      const cloudLists = await fetchUserCloudPlaylists(settings.kugouToken, settings.kugouUserId);
+      const cloudLists = await fetchUserCloudPlaylists(
+        settings.kugouToken,
+        settings.kugouUserId,
+        settings.kugouAppId
+      );
       if (cloudLists.length > 0) {
         const localList = await getLocalPlaylists();
         const importedOnly = localList.filter((p) => !p.isUserOwned);
@@ -607,7 +611,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const tracks = await fetchUserCloudPlaylistTracks(
           playlist.listId,
           userSettings.kugouToken,
-          userSettings.kugouUserId
+          userSettings.kugouUserId,
+          userSettings.kugouAppId
         );
         if (tracks.length > 0) {
           const updated: KuGouPlaylist = {
@@ -650,7 +655,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         song,
         target.listId,
         userSettings.kugouToken,
-        userSettings.kugouUserId
+        userSettings.kugouUserId,
+        userSettings.kugouAppId
       );
       if (cloudRes.success) {
         cloudNotice = '，并已成功同步至酷狗账号！';

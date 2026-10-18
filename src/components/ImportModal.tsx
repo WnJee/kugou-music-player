@@ -1,9 +1,10 @@
 /**
- * 歌单导入弹窗组件 (src/components/ImportModal.tsx)
+ * 歌单导入弹窗 (src/components/ImportModal.tsx)
+ * 单一输入 → 单一主操作。示例格式收进发丝线分区块，不用彩色 icon 卡堆叠。
  */
 
 import React, { useState } from 'react';
-import { FolderPlus, Loader2, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Loader2, X } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { importKuGouPlaylist } from '../services/kugouPlaylist';
 
@@ -21,7 +22,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose }) => 
   if (!isOpen) return null;
 
   const handleImport = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || isLoading) return;
     setIsLoading(true);
     setErrorMsg(null);
 
@@ -40,78 +41,100 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose }) => 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in select-none">
-      <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-white/10 p-6 shadow-2xl text-white relative">
-        {/* 关闭按钮 */}
-        <button
-          onClick={onClose}
-          className="absolute right-4 top-4 p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        {/* 标题 */}
-        <div className="flex items-center gap-2.5 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center">
-            <FolderPlus className="w-5 h-5" />
+    <div className="overlay" onClick={onClose} role="presentation">
+      <div
+        className="sheet"
+        style={{ maxWidth: 460 }}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="导入酷狗歌单"
+      >
+        <div className="sheet-head-row">
+          <div className="min-w-0 flex-1">
+            <h2 className="sheet-title">导入歌单</h2>
+            <p className="sheet-sub">粘贴分享链接、酷狗码，或直接输入歌单 ID</p>
           </div>
-          <div>
-            <h2 className="text-base font-bold">导入酷狗歌单</h2>
-            <p className="text-xs text-zinc-400">支持短链、酷狗口令码或纯数字 ID</p>
-          </div>
+          <button type="button" onClick={onClose} className="icon-btn" title="关闭">
+            <X size={16} strokeWidth={1.8} />
+          </button>
         </div>
 
-        {/* 输入框 */}
-        <div className="mb-4">
+        <div className="sheet-body">
           <textarea
             rows={3}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder="请在此粘贴酷狗分享文本或链接，例如：&#10;https://t1.kugou.com/xxxx 或 酷狗码 ￥abc123￥"
-            className="w-full p-3 bg-white/5 border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50 resize-none font-mono"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleImport();
+            }}
+            placeholder={'https://t1.kugou.com/xxxx\n或 ￥abc123￥\n或 3280341'}
+            className="field field-area"
+            style={{ fontSize: 'var(--fs-2)' }}
+            aria-label="歌单链接或酷狗码"
+            autoFocus
           />
+
+          {errorMsg && (
+            <div className="notice mt-3" data-tone="bad" role="alert">
+              <AlertCircle size={13} strokeWidth={1.8} className="mt-0.5 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+            <p className="microcaps" style={{ marginBottom: 8 }}>
+              支持的三种输入
+            </p>
+            <ol
+              style={{
+                margin: 0,
+                padding: 0,
+                listStyle: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 7,
+              }}
+            >
+              {[
+                ['01', '手机 App 分享短链', 't1.kugou.com/… 或 m.kugou.com/…'],
+                ['02', '酷狗码 / 口令', '带 ￥ 符号的整段口令也可以'],
+                ['03', '纯数字歌单 ID', '或网页版专辑 URL'],
+              ].map(([no, title, hint]) => (
+                <li key={no} className="flex items-baseline gap-2.5">
+                  <span
+                    className="mono shrink-0"
+                    style={{ fontSize: 'var(--fs-1)', color: 'var(--ink-4)' }}
+                  >
+                    {no}
+                  </span>
+                  <span style={{ fontSize: 'var(--fs-2)', color: 'var(--ink-1)' }}>
+                    {title}
+                    <span style={{ color: 'var(--ink-3)' }}> — {hint}</span>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
 
-        {/* 错误提示 */}
-        {errorMsg && (
-          <div className="mb-4 p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
-            {errorMsg}
-          </div>
-        )}
-
-        {/* 示例提示 */}
-        <div className="mb-6 p-3 rounded-xl bg-white/[0.02] border border-white/5 space-y-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-400">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span>输入格式支持</span>
-          </div>
-          <ul className="text-[11px] text-zinc-500 space-y-1 list-disc list-inside">
-            <li>酷狗手机 App 分享短链（如 https://t1.kugou.com/...）</li>
-            <li>酷狗码 / 复制口令（支持带 ￥ 符号的口令字符串）</li>
-            <li>纯数字歌单 ID（如 3280341）或网页版专辑 URL</li>
-          </ul>
-        </div>
-
-        {/* 提交按钮 */}
-        <div className="flex items-center justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-medium text-zinc-400 hover:text-white hover:bg-white/5 transition-colors"
-          >
+        <div className="sheet-foot">
+          <button type="button" onClick={onClose} className="btn btn-quiet">
             取消
           </button>
           <button
+            type="button"
             onClick={handleImport}
             disabled={isLoading || !inputText.trim()}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-white font-medium text-xs shadow-lg shadow-cyan-500/25 active:scale-95 transition-all"
+            className="btn btn-primary"
           >
             {isLoading ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>正在解析歌单...</span>
+                <Loader2 size={13} className="spin" strokeWidth={2} />
+                正在解析…
               </>
             ) : (
-              <span>开始导入</span>
+              '开始导入'
             )}
           </button>
         </div>

@@ -34,3 +34,7 @@ pnpm-debug.log*
 .vscode/
 .idea/
 *.keystore
+
+# 原子写入临时目录（会让 Vite watcher 在 Windows 上 EBUSY 崩溃）
+*.tmpdir/
+*.tmp

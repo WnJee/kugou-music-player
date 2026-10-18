@@ -25,7 +25,9 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell vite to ignore watching `src-tauri`
-      ignored: ['**/src-tauri/**'],
+      //    `.X.tsx.<pid>.<uuid>.tmpdir/` 是原子写入留下的临时目录，watcher 会在
+      //    Windows 上因 EBUSY 直接崩掉，因此一并忽略
+      ignored: ['**/src-tauri/**', '**/*.tmpdir/**', '**/*.tmp'],
     },
     proxy: {
       '/proxy-login': {

@@ -2,9 +2,13 @@
  * 通用丝滑歌词滚动组件 (src/components/LyricsScroller.tsx)
  *
  * 用 transform 位移替代原生 scrollTo 滚动：
- * - 所有歌词行使用相同字号/行高（仅颜色/字重/缩放变化），布局完全静态，不会因行高动画导致"滚过头再回弹"
- * - 位移使用统一缓动曲线，视觉上丝滑无抖动
+ * - 位移与缩放全部走 transform，不改变字号/行高，布局完全静态，
+ *   不会因行高动画导致"滚过头再回弹"，也不影响 offsetTop 测量
  * - 支持滚轮/触摸临时翻阅，松手数秒后自动回到跟随模式
+ *
+ * 两种排版：
+ *   variant="center" —— 播放详情页：居中、按距当前行的距离逐级缩放，当前行最大最亮
+ *   variant="left"   —— 桌面歌词栏：左对齐 + 2px 赭橙竖条，信息密度更高
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -18,38 +22,50 @@ interface LyricsScrollerProps {
   lyrics: LyricLine[];
   activeIndex: number;
   onSeek: (time: number) => void;
-  /** 激活行样式（请保持与 idle 相同字号和行高，仅用颜色/字重/缩放区分） */
-  activeClassName: string;
-  /** 非激活行样式 */
-  idleClassName: string;
-  /** 滚动容器额外类名（padding、蒙版等） */
+  /** 激活行附加样式（不要改字号/行高，缩放由 data-distance 负责） */
+  activeClassName?: string;
+  /** 非激活行附加样式 */
+  idleClassName?: string;
+  /** 滚动容器（外层，负责裁剪与蒙版）额外类名 */
   containerClassName?: string;
+  /** 内部位移层额外类名（内边距放在这里才能正确测量） */
+  contentClassName?: string;
+  /** 无歌词时的展示节点 */
+  emptyNode?: React.ReactNode;
+  /** 排版：居中缩放（播放页）或左对齐（桌面歌词栏） */
+  variant?: 'center' | 'left';
 }
 
 /** 用户手动翻阅后，多久恢复自动跟随 */
 const RESUME_DELAY = 4000;
-/** 位移过渡曲线：标准 ease-out，无过冲（避免回弹感） */
+/** 位移过渡曲线：标准 ease-out，无过冲 */
 const EASE = 'cubic-bezier(0.22, 0.61, 0.36, 1)';
+
+/** 距当前行的距离，超过 3 行统一按 3 处理（更远的行视觉上已无差别） */
+function distanceOf(idx: number, activeIndex: number): number {
+  if (activeIndex < 0) return 3;
+  return Math.min(3, Math.abs(idx - activeIndex));
+}
 
 export const LyricsScroller: React.FC<LyricsScrollerProps> = ({
   lyrics,
   activeIndex,
   onSeek,
-  activeClassName,
-  idleClassName,
+  activeClassName = '',
+  idleClassName = '',
   containerClassName = '',
+  contentClassName = '',
+  emptyNode,
+  variant = 'left',
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const resumeTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ y: number; offset: number } | null>(null);
 
-  // 自动跟随的目标位移（让激活行垂直居中）
   const [baseOffset, setBaseOffset] = useState(0);
-  // 用户手动翻阅的附加位移
   const [userOffset, setUserOffset] = useState(0);
   const [userActive, setUserActive] = useState(false);
-  // 切歌/首次定位时跳过过渡动画
   const [instant, setInstant] = useState(true);
 
   const clearResumeTimer = useCallback(() => {
@@ -69,17 +85,25 @@ export const LyricsScroller: React.FC<LyricsScrollerProps> = ({
 
   useEffect(() => clearResumeTimer, [clearResumeTimer]);
 
-  // 重新测量：让 activeIndex 对应行居中
   const measure = useCallback(() => {
     const container = containerRef.current;
     const list = listRef.current;
     if (!container || !list) return;
+    // 还没唱到第一句时（activeIndex = -1）不做居中位移，歌词从顶部开始，
+    // 否则整段歌词会被推到底部，上面留一片空白
+    if (activeIndex < 0) {
+      setBaseOffset(0);
+      return;
+    }
     const el = list.querySelector<HTMLElement>(`[data-lyric-idx="${activeIndex}"]`);
-    if (!el) return;
+    if (!el) {
+      setBaseOffset(0);
+      return;
+    }
+    // offsetTop / offsetHeight 不受 transform: scale 影响，所以缩放不会打乱定位
     setBaseOffset(container.clientHeight / 2 - el.offsetTop - el.offsetHeight / 2);
   }, [activeIndex]);
 
-  // 切歌（lyrics 引用变化）：立即归位、恢复跟随
   useEffect(() => {
     setInstant(true);
     setUserActive(false);
@@ -92,7 +116,6 @@ export const LyricsScroller: React.FC<LyricsScrollerProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [measure]);
 
-  // 容器尺寸变化时重新对齐
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return;
@@ -131,7 +154,7 @@ export const LyricsScroller: React.FC<LyricsScrollerProps> = ({
     const start = touchStartRef.current;
     if (!start) return;
     const next = clampTotal(start.offset + (e.touches[0].clientY - start.y));
-    setInstant(true); // 拖动过程直接跟手，不做缓动
+    setInstant(true);
     setUserActive(true);
     setUserOffset(next - baseOffset);
   };
@@ -150,40 +173,48 @@ export const LyricsScroller: React.FC<LyricsScrollerProps> = ({
   };
 
   const displayOffset = userActive ? baseOffset + userOffset : baseOffset;
+  const isEmpty = lyrics.length === 0;
 
   return (
     <div
       ref={containerRef}
-      className={`relative overflow-hidden touch-none ${containerClassName}`}
-      onWheel={handleWheel}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
+      className={`lyric-scroller lyric-scroller--${variant} relative overflow-hidden touch-none ${containerClassName}`}
+      onWheel={isEmpty ? undefined : handleWheel}
+      onTouchStart={isEmpty ? undefined : handleTouchStart}
+      onTouchMove={isEmpty ? undefined : handleTouchMove}
+      onTouchEnd={isEmpty ? undefined : handleTouchEnd}
     >
-      <div
-        ref={listRef}
-        className="relative will-change-transform"
-        style={{
-          transform: `translate3d(0, ${displayOffset}px, 0)`,
-          transition: instant ? 'none' : `transform 600ms ${EASE}`,
-        }}
-      >
-        {lyrics.map((line, idx) => {
-          const isActive = idx === activeIndex;
-          return (
-            <p
-              key={`${line.time}-${idx}`}
-              data-lyric-idx={idx}
-              onClick={() => handleSeek(line.time)}
-              className={`cursor-pointer select-none text-center transition-all duration-300 ${
-                isActive ? activeClassName : idleClassName
-              }`}
-            >
-              {line.text || '♪'}
-            </p>
-          );
-        })}
-      </div>
+      {isEmpty ? (
+        <div className="absolute inset-0 flex items-center justify-center">{emptyNode}</div>
+      ) : (
+        <div
+          ref={listRef}
+          className={`relative will-change-transform ${contentClassName}`}
+          style={{
+            transform: `translate3d(0, ${displayOffset}px, 0)`,
+            transition: instant ? 'none' : `transform 620ms ${EASE}`,
+          }}
+        >
+          {lyrics.map((line, idx) => {
+            const isActive = idx === activeIndex;
+            const distance = distanceOf(idx, activeIndex);
+            return (
+              <p
+                key={`${line.time}-${idx}`}
+                data-lyric-idx={idx}
+                data-active={isActive}
+                data-distance={distance}
+                onClick={() => handleSeek(line.time)}
+                className={`lyric-line lyric-line--${variant} cursor-pointer select-none ${
+                  isActive ? activeClassName : idleClassName
+                }`}
+              >
+                {line.text || '·'}
+              </p>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

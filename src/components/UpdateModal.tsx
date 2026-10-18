@@ -5,10 +5,13 @@
  *   - 启动后静默检查 GitHub 新版本，发现更新时弹出本弹窗
  *   - 展示新版本号与更新说明，点击「立即更新」显示下载进度
  *   - 下载安装完成后自动重启进入新版
+ *
+ * 视觉口径见 DESIGN.md：与其余弹窗共用 .overlay/.sheet，主键用赭橙，
+ * 进度条走自绘轨道（与播放进度同一套 .seek 组件）。
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Download, RefreshCw, X, CheckCircle2, AlertCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, RefreshCw, X } from 'lucide-react';
 import {
   checkForUpdate,
   downloadAndInstallUpdate,
@@ -38,7 +41,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ checkSignal, onClose }
       const res = await checkForUpdate();
       setResult(res);
       if (res.ok && !res.available) {
-        setMessage('当前已是最新版本 🎉');
+        setMessage('当前已是最新版本');
       } else if (!res.ok) {
         setMessage('检查更新失败，请稍后重试');
         setFailed(true);
@@ -82,92 +85,129 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ checkSignal, onClose }
     progress.total > 0 ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : 0;
 
   return (
-    <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={downloading ? undefined : onClose}
-    >
+    <div className="overlay" onClick={downloading ? undefined : onClose} role="presentation">
       <div
-        className="w-[90%] max-w-sm rounded-2xl bg-zinc-900 border border-white/10 shadow-2xl p-5 space-y-4"
+        className="sheet"
+        style={{ maxWidth: 420 }}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="应用更新"
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {failed ? (
-              <AlertCircle className="w-5 h-5 text-red-400" />
-            ) : (
-              <Download className="w-5 h-5 text-cyan-400" />
-            )}
-            <h3 className="text-sm font-bold text-white">
+        <div className="sheet-head-row">
+          <div className="min-w-0 flex-1">
+            <h2 className="sheet-title">
               {result?.available ? `发现新版本 v${result.version}` : '软件更新'}
-            </h3>
+            </h2>
+            <p className="sheet-sub">
+              {downloading ? '正在下载，请勿关闭应用' : '从 GitHub Releases 获取最新版本'}
+            </p>
           </div>
           {!downloading && (
-            <button onClick={onClose} className="text-zinc-500 hover:text-white text-xs">
-              ✕
+            <button type="button" onClick={onClose} className="icon-btn" title="关闭">
+              <X size={16} strokeWidth={1.8} />
             </button>
           )}
         </div>
 
-        {result?.available && result.notes && !downloading && (
-          <div className="max-h-32 overflow-y-auto custom-scrollbar rounded-xl bg-white/[0.03] border border-white/5 p-3">
-            <p className="text-[11px] text-zinc-400 whitespace-pre-wrap break-words leading-relaxed">
-              {result.notes.slice(0, 500)}
-            </p>
-          </div>
-        )}
-
-        {downloading ? (
-          <div className="space-y-2">
-            <div className="flex justify-between text-[11px] text-zinc-400">
-              <span>正在下载更新...</span>
-              <span className="font-mono tabular-nums">
-                {progress.total > 0
-                  ? `${formatMB(progress.downloaded)} / ${formatMB(progress.total)}`
-                  : formatMB(progress.downloaded)}
-              </span>
-            </div>
-            <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <p className="text-[10px] text-zinc-500 text-center">
-              下载完成后将自动安装并重启应用
-            </p>
-          </div>
-        ) : (
-          <>
-            {message && (
-              <div className="flex items-center gap-2 text-xs text-zinc-300">
-                {!failed && message.includes('最新') && (
-                  <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
-                )}
-                <span>{message}</span>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={runCheck}
-                disabled={checking}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-xs transition-colors disabled:opacity-50"
+        <div className="sheet-body">
+          {/* 更新说明 */}
+          {result?.available && result.notes && !downloading && (
+            <div
+              className="set-block"
+              style={{ marginTop: 0, paddingTop: 0, borderTop: 0 }}
+            >
+              <p className="microcaps" style={{ marginBottom: 8 }}>
+                更新内容
+              </p>
+              <p
+                style={{
+                  margin: 0,
+                  maxHeight: 132,
+                  overflowY: 'auto',
+                  fontSize: 'var(--fs-2)',
+                  lineHeight: 'var(--lh-body)',
+                  color: 'var(--ink-2)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${checking ? 'animate-spin' : ''}`} />
-                检查更新
-              </button>
-              {result?.available && (
-                <button
-                  onClick={handleUpdate}
-                  disabled={checking}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-medium shadow-lg shadow-cyan-500/20 transition-all disabled:opacity-50"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  立即更新
-                </button>
-              )}
+                {result.notes.slice(0, 500)}
+              </p>
             </div>
-          </>
+          )}
+
+          {downloading ? (
+            <div>
+              <div className="flex items-baseline justify-between" style={{ marginBottom: 8 }}>
+                <span style={{ fontSize: 'var(--fs-2)', color: 'var(--ink-1)' }}>
+                  正在下载更新
+                </span>
+                <span className="mono" style={{ fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}>
+                  {progress.total > 0
+                    ? `${formatMB(progress.downloaded)} / ${formatMB(progress.total)}`
+                    : formatMB(progress.downloaded)}
+                </span>
+              </div>
+
+              {/* 与播放进度共用自绘轨道 */}
+              <div className="seek" aria-hidden>
+                <div className="seek-track">
+                  <div className="seek-fill" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+
+              <p
+                className="mono"
+                style={{ marginTop: 10, fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}
+                aria-live="polite"
+              >
+                {pct}% · 下载完成后将自动安装并重启
+              </p>
+            </div>
+          ) : (
+            <>
+              {message && (
+                <div className="notice" data-tone={failed ? 'bad' : 'ok'}>
+                  {failed ? (
+                    <AlertCircle size={13} strokeWidth={1.8} className="mt-0.5 shrink-0" />
+                  ) : (
+                    <CheckCircle2 size={13} strokeWidth={1.8} className="mt-0.5 shrink-0" />
+                  )}
+                  <span>{message}</span>
+                </div>
+              )}
+
+              {result?.available && (
+                <p
+                  className="mono"
+                  style={{ marginTop: 12, fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}
+                >
+                  当前版本 → v{result.version}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        {!downloading && (
+          <div className="sheet-foot">
+            <button type="button" onClick={runCheck} disabled={checking} className="btn">
+              <RefreshCw size={12} strokeWidth={1.8} className={checking ? 'spin' : undefined} />
+              检查更新
+            </button>
+            {result?.available && (
+              <button
+                type="button"
+                onClick={handleUpdate}
+                disabled={checking}
+                className="btn btn-primary"
+              >
+                <Download size={12} strokeWidth={2} />
+                立即更新
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
