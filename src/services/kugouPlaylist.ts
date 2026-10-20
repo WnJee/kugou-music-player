@@ -6,6 +6,7 @@
 import { Store } from '@tauri-apps/plugin-store';
 import type { KuGouPlaylist, KuGouSong } from '../types/music';
 import { md5 } from '../utils/md5';
+import { toSecureImageUrl } from '../utils/url';
 import { httpGet, httpPost, KUGOU_GATEWAY_UA, request } from './http';
 import { getDeviceMid } from './device';
 
@@ -103,8 +104,7 @@ export function extractKuGouInput(text: string): {
  * 格式化歌曲封面链接（替换 {size} 占位符为 400）
  */
 function formatCoverUrl(url?: string): string {
-  if (!url) return '';
-  return url.replace(/\{size\}/g, '400').replace(/^http:\/\//, 'https://');
+  return toSecureImageUrl(url?.replace(/\{size\}/g, '400'));
 }
 
 /**
@@ -729,9 +729,7 @@ export async function searchKuGouSongs(
             singerName,
             albumId: String(item.AlbumID || ''),
             duration: Number(item.Duration || 0),
-            coverUrl: (item.Image || '')
-              .replace('{size}', '400')
-              .replace(/^http:\/\//, 'https://'),
+            coverUrl: formatCoverUrl(item.Image),
             sqHash: item.SQFileHash ? item.SQFileHash.toLowerCase() : undefined,
             mixSongId: String(item.MixSongID || item.ID || ''),
           };

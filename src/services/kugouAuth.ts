@@ -4,6 +4,7 @@
  */
 
 import { md5 } from '../utils/md5';
+import { toSecureImageUrl } from '../utils/url';
 import { getDeviceMid } from './device';
 import { httpGet } from './http';
 
@@ -130,7 +131,7 @@ export async function checkLoginQrCode(qrcodeKey: string): Promise<QrCodeStatusR
       token: res.data.token,
       userid: res.data.userid ? String(res.data.userid) : undefined,
       nickname: res.data.nickname,
-      avatar: res.data.pic,
+      avatar: toSecureImageUrl(res.data.pic),
       message:
         rawStatus === 1
           ? '等待手机扫码'

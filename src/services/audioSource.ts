@@ -7,6 +7,7 @@
 import { Store } from '@tauri-apps/plugin-store';
 import type { AudioSourceResult, KuGouSong, UserSettings } from '../types/music';
 import { md5 } from '../utils/md5';
+import { toSecureImageUrl } from '../utils/url';
 import { httpGet, httpPost, KUGOU_CONCEPT_UA, KUGOU_GATEWAY_UA } from './http';
 import { getDeviceMid } from './device';
 
@@ -150,7 +151,7 @@ async function fetchUserProfileWith(
     if (res?.status === 1 && res.data?.nickname) {
       return {
         nickname: res.data.nickname,
-        avatar: (res.data.pic || '').replace(/^http:\/\//, 'https://'),
+        avatar: toSecureImageUrl(res.data.pic),
       };
     }
     return null;
@@ -264,13 +265,26 @@ export async function keepTokenAlive(token: string, userid: string): Promise<boo
   return status !== null;
 }
 
+/** 概念版听歌任务接口要求的客户端身份：clientver 与 UA 必须成对使用，否则广告上报固定返回 20028 */
+const TASK_CLIENTVER = 10566;
+const TASK_UA = 'Android13-1070-10566-201-0-ReportPlaySongToServerProtocol-wifi';
+
+/** 每日可领取次数与领取节奏（间隔过短会被接口限流 30000） */
+const CLAIM_DAILY_TOTAL = 8;
+const CLAIM_INTERVAL_MS = 8000;
+const CLAIM_MAX_ATTEMPTS = CLAIM_DAILY_TOTAL + 4;
+const CLAIM_RATE_LIMITED = 30000;
+const CLAIM_QUOTA_EXHAUSTED = 30002;
+const CLAIM_RATE_RETRY = 3;
+const CLAIM_RETRY_BACKOFF_MS = 15000;
+
 /**
  * 酷狗概念版每日领取 VIP（已实测可用的官方接口，2025+ 版本）
  * 流程（与酷狗概念版 App「听歌领会员」一致）：
- *   1. 听歌上报 /youth/v2/report/listen_song（clientver=10566 + 专用 UA）
+ *   1. 听歌上报 /youth/v2/report/listen_song
  *   2. 广告播放上报 /youth/v1/ad/play_report 领取会员时长（每日最多 8 次，每次 3 小时）
  *   3. 查询 /v1/get_union_vip 获取概念版会员到期时间
- * 成功或"今日已领完"才写入 lastCheckinDate；失败如实返回错误信息。
+ * 三步均使用概念版听歌任务的 clientver/UA；成功领取到时长才写入 lastCheckinDate，失败如实返回错误信息。
  */
 async function checkinConceptVipWith(
   token: string,
@@ -324,47 +338,65 @@ async function checkinConceptVipWith(
     });
   };
 
+  /** 听歌任务专用请求上下文（clientver 与 UA 成对，body 参与签名） */
+  const TASK_CONTEXT = {
+    query: { clientver: TASK_CLIENTVER },
+    ua: TASK_UA,
+    contentType: 'application/json; charset=utf-8',
+  } as const;
+
   try {
-    // 1. 听歌上报（触发每日听歌任务）
+    // 1. 听歌上报（触发每日听歌任务，失败不阻断领取）
     const listen = await kgPost<{ status: number; error_code: number; error_msg?: string }>(
       '/youth/v2/report/listen_song',
       { mixsongid: 666075191 },
-      {
-        query: { clientver: 10566 },
-        ua: 'Android13-1070-10566-201-0-ReportPlaySongToServerProtocol-wifi',
-        contentType: 'application/json; charset=utf-8',
-      }
+      TASK_CONTEXT
     );
     console.info('[checkinConceptVip] 听歌上报:', listen?.status, listen?.error_msg || '');
 
-    // 2. 广告播放上报领取会员时长：每日最多 8 次，error_code 30002 表示今日已领完
+    // 2. 广告播放上报领取会员时长：每日最多 8 次，data.remain 归零即今日领满
+    //    30000 是接口限流（非业务失败），退避后重试，不计入领取次数
     let claimed = 0;
-    let reachedLimit = false;
+    let remain: number | undefined;
+    let quotaExhausted = false;
     let lastMsg = '';
-    for (let i = 1; i <= 8; i++) {
+    let rateLimited = 0;
+    for (let attempt = 1; attempt <= CLAIM_MAX_ATTEMPTS && claimed < CLAIM_DAILY_TOTAL; attempt++) {
       const now = Date.now();
       const ad = await kgPost<{
         status: number;
         error_code: number;
         error_msg?: string;
         data?: { remain?: number; done?: number; total?: number; award_vip_hour?: number };
-      }>('/youth/v1/ad/play_report', {
-        ad_id: 12307537187,
-        play_end: now,
-        play_start: now - 30000,
-      });
+      }>(
+        '/youth/v1/ad/play_report',
+        {
+          ad_id: 12307537187,
+          play_end: now,
+          play_start: now - 30000,
+        },
+        TASK_CONTEXT
+      );
 
       if (ad?.status === 1) {
-        claimed += 1;
-        // 每次领取间隔 2 秒，防止风控
-        if (i < 8) await new Promise((resolve) => setTimeout(resolve, 2000));
-      } else if (ad?.error_code === 30002) {
-        reachedLimit = true;
+        rateLimited = 0;
+        remain = ad.data?.remain ?? remain;
+        if ((ad.data?.award_vip_hour ?? 0) > 0) claimed += 1;
+        if (remain === 0) break;
+      } else if (ad?.error_code === CLAIM_RATE_LIMITED) {
+        rateLimited += 1;
+        lastMsg = ad.error_msg || '领取过于频繁';
+        if (rateLimited >= CLAIM_RATE_RETRY) break;
+        await new Promise((resolve) => setTimeout(resolve, CLAIM_RETRY_BACKOFF_MS));
+        continue;
+      } else if (ad?.error_code === CLAIM_QUOTA_EXHAUSTED) {
+        quotaExhausted = true;
         break;
       } else {
         lastMsg = ad?.error_msg || `领取失败 (error_code: ${ad?.error_code})`;
         break;
       }
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_INTERVAL_MS));
     }
 
     // 3. 查询概念版会员到期时间（复用 GET 版状态查询，失败不影响签到结果）
@@ -376,13 +408,9 @@ async function checkinConceptVipWith(
       /* 忽略查询失败 */
     }
 
-    if (claimed > 0 || reachedLimit) {
+    if (claimed > 0 || remain === 0 || quotaExhausted) {
       await saveUserSettings({ lastCheckinDate: todayStr });
-      const claimMsg = reachedLimit
-        ? claimed > 0
-          ? `今日领取 ${claimed} 次后已达上限`
-          : '今日已完成领取'
-        : `成功领取 ${claimed} 次`;
+      const claimMsg = claimed > 0 ? `成功领取 ${claimed} 次` : '今日次数已领满';
       return {
         success: true,
         message: `概念版 VIP 打卡完成：${claimMsg}${expiryHint}`,
