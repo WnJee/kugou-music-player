@@ -1,6 +1,6 @@
 [package]
 name = "kugou-music-player"
-version = "0.3.3"
+version = "0.3.4"
 description = "KuGou Music Player with Tauri v2"
 authors = ["wnjie"]
 edition = "2021"
@@ -13,7 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# tray-icon: Windows / Linux 上关闭主界面后靠托盘叫回来（只在桌面端编译）
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-http = "2"
 tauri-plugin-store = "2"
 tauri-plugin-updater = "2"

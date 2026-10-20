@@ -461,9 +461,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!audioRef.current || !currentSong) return;
     if (isPlaying) {
       audioRef.current.pause();
-    } else {
-      audioRef.current.play().catch((e) => console.warn('播放恢复受阻:', e));
+      return;
     }
+    // 冷启动恢复的只是「上次播放的歌」这个记录，音源还没解析、audio 没有 src，
+    // 此时直接 play() 会被浏览器拒绝、表现为点了没反应，所以走一次完整解析。
+    if (!audioSourceInfo) {
+      void playSong(currentSong);
+      return;
+    }
+    void audioRef.current.play().catch((e) => console.warn('播放恢复受阻:', e));
   };
 
   // 获取下一曲索引（基于独立播放队列）
@@ -804,12 +810,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ms.setActionHandler('seekto', (d) => {
         if (d.seekTime != null) seek(d.seekTime);
       });
-      ms.setActionHandler('seekbackward', () => seek(Math.max(0, currentTime - 10)));
-      ms.setActionHandler('seekforward', () => seek(Math.min(duration || 0, currentTime + 10)));
+      // 不要注册 seekbackward / seekforward：macOS 控制中心会拿这对「快进快退」挤掉
+      // 上一首 / 下一首，按钮位置变成两个圆弧箭头。
     } catch {
       // 当前平台不支持的 action 忽略
     }
-  }, [currentSong, togglePlay, prevSong, nextSong, seek, currentTime, duration]);
+  }, [currentSong, togglePlay, prevSong, nextSong, seek]);
 
   return (
     <PlayerContext.Provider
