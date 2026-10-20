@@ -1,6 +1,6 @@
 [package]
 name = "kugou-music-player"
-version = "0.3.4"
+version = "0.3.5"
 description = "KuGou Music Player with Tauri v2"
 authors = ["wnjie"]
 edition = "2021"

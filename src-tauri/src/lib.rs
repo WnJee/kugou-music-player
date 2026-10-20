@@ -1,11 +1,16 @@
 // 关闭窗口不等于退出进程：主界面收起来后音频继续在后台播放。
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::WindowEvent;
+
+#[cfg(desktop)]
+use tauri::{AppHandle, Manager};
 
 /// 只有走「真退出」这条路才放行窗口销毁，其余关闭请求一律转成隐藏。
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// unminimize 只存在于桌面端的 WebviewWindow，移动端没有这个概念。
+#[cfg(desktop)]
 fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
