@@ -9,11 +9,12 @@
  * - 主播放键靠右（拇指可达），底部留安全区。
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown,
   ListMusic,
+  LocateFixed,
   Pause,
   Play,
   Repeat,
@@ -28,6 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
+import { AudioOptionsMenu } from './AudioOptionsMenu';
 import { LyricsScroller } from './LyricsScroller';
 import type { PlayMode } from '../types/music';
 
@@ -82,6 +84,29 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
   } = usePlayer();
 
   const [isQueueOpen, setIsQueueOpen] = useState(false);
+  const drawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const [flashHash, setFlashHash] = useState<string | null>(null);
+  const currentHash = currentSong?.hash ?? null;
+
+  const scrollToCurrent = (flash: boolean) => {
+    if (!currentHash) return;
+    const row = drawerScrollRef.current?.querySelector<HTMLElement>(
+      `[data-hash="${currentHash}"]`
+    );
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (!flash) return;
+    setFlashHash(currentHash);
+    window.setTimeout(() => setFlashHash(null), 900);
+  };
+
+  // 打开队列直接落到当前播放位置，只在展开这一刻定位
+  useEffect(() => {
+    if (!isOpen || !isQueueOpen) return;
+    const timer = window.setTimeout(() => scrollToCurrent(false), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isQueueOpen, isOpen]);
 
   if (!isOpen || !currentSong) return null;
 
@@ -209,6 +234,8 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
           {/* 主键靠右：单手握持时拇指更容易够到 */}
           <div className="flex-1" />
 
+          <AudioOptionsMenu />
+
           <button type="button" onClick={toggleMute} className="icon-btn" aria-label="静音">
             <VolIcon size={19} strokeWidth={1.7} />
           </button>
@@ -253,6 +280,16 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
                 </div>
                 <button
                   type="button"
+                  onClick={() => scrollToCurrent(true)}
+                  disabled={!currentHash}
+                  className="icon-btn"
+                  title="定位到当前播放"
+                  aria-label="定位到当前播放"
+                >
+                  <LocateFixed size={17} strokeWidth={1.8} />
+                </button>
+                <button
+                  type="button"
                   onClick={clearQueue}
                   disabled={queueSongs.length === 0}
                   className="btn btn-quiet"
@@ -271,7 +308,7 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
                 </button>
               </div>
 
-              <div className="drawer-scroll">
+              <div className="drawer-scroll" ref={drawerScrollRef}>
                 {queueSongs.length === 0 ? (
                   <p
                     className="rail-empty"
@@ -289,6 +326,8 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
                         onClick={() => playSong(song)}
                         className="row"
                         data-playing={isCur}
+                        data-hash={song.hash}
+                        data-flash={flashHash === song.hash}
                         style={{ gridTemplateColumns: '26px minmax(0,1fr) 46px', width: '100%' }}
                       >
                         <span className="row-idx">

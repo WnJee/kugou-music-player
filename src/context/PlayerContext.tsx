@@ -3,14 +3,26 @@
  */
 
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
-import type { AudioSourceResult, KuGouPlaylist, KuGouSong, LyricLine, PlayMode, UserSettings } from '../types/music';
+import type {
+  AudioEffectId,
+  AudioQuality,
+  AudioSourceResult,
+  KuGouPlaylist,
+  KuGouSong,
+  LyricLine,
+  PlayMode,
+  UserSettings,
+} from '../types/music';
 import {
   fetchConceptVipStatus,
   getUserSettings,
   resolveAudioSource,
+  saveUserSettings,
   tryAutoCheckin,
   keepTokenAlive,
 } from '../services/audioSource';
+import { AudioEffectChain, audioEffectPreset, checkAudioCors } from '../services/audioEffects';
+import { DEFAULT_AUDIO_QUALITY, audioQualityOption } from '../services/audioQuality';
 import {
   deleteLocalPlaylist,
   getLocalPlaylists,
@@ -18,6 +30,7 @@ import {
   fetchUserCloudPlaylists,
   fetchUserCloudPlaylistTracks,
   addSongToUserCloudPlaylist,
+  removeSongFromUserCloudPlaylist,
 } from '../services/kugouPlaylist';
 import { fetchSongLyrics } from '../services/lyrics';
 import { Store } from '@tauri-apps/plugin-store';
@@ -43,6 +56,10 @@ interface PlayerContextType {
     song: KuGouSong,
     playlistId: string
   ) => Promise<{ success: boolean; message: string }>;
+  removeSongFromPlaylist: (
+    song: KuGouSong,
+    playlistId: string
+  ) => Promise<{ success: boolean; message: string }>;
 
   // 播放状态
   currentSong: KuGouSong | null;
@@ -55,6 +72,14 @@ interface PlayerContextType {
   isLoadingAudio: boolean;
   audioSourceInfo: AudioSourceResult | null;
   errorMsg: string | null;
+  /** 当前音质档位（切换后立即用新档位重解析当前曲目） */
+  audioQuality: AudioQuality;
+  setAudioQuality: (quality: AudioQuality) => void;
+  /** 当前音效档位 */
+  audioEffect: AudioEffectId;
+  setAudioEffect: (effect: AudioEffectId) => void;
+  /** 当前音源没有放行跨域，音效无法接入音频图 */
+  effectBlocked: boolean;
   /** 独立播放队列（与歌单解耦，仅「播放全部」或手动清空时刷新） */
   queueSongs: KuGouSong[];
   clearQueue: () => Promise<void>;
@@ -102,6 +127,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isLoadingAudio, setIsLoadingAudio] = useState<boolean>(false);
   const [audioSourceInfo, setAudioSourceInfo] = useState<AudioSourceResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [audioQuality, setAudioQualityState] = useState<AudioQuality>(DEFAULT_AUDIO_QUALITY);
+  const [audioEffect, setAudioEffectState] = useState<AudioEffectId>('off');
+  const [effectBlocked, setEffectBlocked] = useState<boolean>(false);
 
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [activeLyricIndex, setActiveLyricIndex] = useState<number>(-1);
@@ -112,70 +140,110 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const pendingSeekRef = useRef<number | null>(null);
   // 音源异常后自动跳过的触发口：改由下面的 effect 绑定，避免与 nextSong 的声明顺序互相牵扯
   const skipBrokenRef = useRef<(reason: unknown) => void>(() => {});
-  // 初始化 Audio 实例
-  useEffect(() => {
+  // 媒体元素的事件监听只在建元素时绑一次，用 ref 读最新值
+  const nextSongRef = useRef<() => void>(() => {});
+  const playModeRef = useRef<PlayMode>('sequence');
+  const volumeRef = useRef<number>(0.8);
+  const isMutedRef = useRef<boolean>(false);
+  // 音效处理链：绑定到某个 <audio> 后无法迁移，换元素时必须一并丢弃
+  const effectChainRef = useRef<AudioEffectChain | null>(null);
+  // 解析音源、挂音效这些异步流程里要读最新档位，不能等下一次渲染
+  const audioQualityRef = useRef<AudioQuality>(DEFAULT_AUDIO_QUALITY);
+  const audioEffectRef = useRef<AudioEffectId>('off');
+
+  audioQualityRef.current = audioQuality;
+  audioEffectRef.current = audioEffect;
+  volumeRef.current = volume;
+  isMutedRef.current = isMuted;
+  playModeRef.current = playMode;
+
+  /**
+   * 媒体元素工厂
+   * 音效要把元素接进 Web Audio，而 MediaElementSource 一旦建立就无法解绑：
+   * 遇到不支持 CORS 的音源只能整个换掉 <audio>，所以创建与事件绑定必须可重复执行。
+   */
+  const createMediaElement = useCallback((): HTMLAudioElement => {
     const audio = new Audio();
-    audioRef.current = audio;
+    audio.volume = isMutedRef.current ? 0 : volumeRef.current;
 
-    audio.volume = volume;
-
-    const onTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-    };
-
-    const onDurationChange = () => {
-      if (audio.duration && !isNaN(audio.duration)) {
-        setDuration(audio.duration);
-      }
-    };
-
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
-    const onWaiting = () => setIsLoadingAudio(true);
-    const onPlaying = () => setIsLoadingAudio(false);
+    audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime));
+    audio.addEventListener('durationchange', () => {
+      if (audio.duration && !isNaN(audio.duration)) setDuration(audio.duration);
+    });
+    audio.addEventListener('play', () => setIsPlaying(true));
+    audio.addEventListener('pause', () => setIsPlaying(false));
+    audio.addEventListener('waiting', () => setIsLoadingAudio(true));
+    audio.addEventListener('playing', () => setIsLoadingAudio(false));
     // 地址解析成功但流本身不可用（404 / 换源 / 解码失败）时 media 元素只抛 error，不会自己往下走
-    const onError = () => {
-      const audio = audioRef.current;
-      if (!audio?.src) return;
+    audio.addEventListener('error', () => {
+      if (!audio.src) return;
       const code = audio.error?.code;
       setErrorMsg(audio.error?.message || `音源错误${code ? ` (${code})` : ''}`);
       setIsPlaying(false);
       setIsLoadingAudio(false);
       skipBrokenRef.current(audio.error ?? 'media error');
-    };
+    });
     // 恢复上次播放进度：待元数据加载完成后定位
-    const onLoadedMetadata = () => {
-      if (pendingSeekRef.current != null) {
-        const target = pendingSeekRef.current;
-        pendingSeekRef.current = null;
-        if (isFinite(audio.duration) && target < audio.duration) {
-          audio.currentTime = target;
-          setCurrentTime(target);
-        }
+    audio.addEventListener('loadedmetadata', () => {
+      if (pendingSeekRef.current == null) return;
+      const target = pendingSeekRef.current;
+      pendingSeekRef.current = null;
+      if (isFinite(audio.duration) && target < audio.duration) {
+        audio.currentTime = target;
+        setCurrentTime(target);
       }
-    };
+    });
+    audio.addEventListener('ended', () => {
+      if (playModeRef.current === 'single') {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        nextSongRef.current();
+      }
+    });
 
-    audio.addEventListener('timeupdate', onTimeUpdate);
-    audio.addEventListener('durationchange', onDurationChange);
-    audio.addEventListener('play', onPlay);
-    audio.addEventListener('pause', onPause);
-    audio.addEventListener('waiting', onWaiting);
-    audio.addEventListener('playing', onPlaying);
-    audio.addEventListener('loadedmetadata', onLoadedMetadata);
-    audio.addEventListener('error', onError);
-
-    return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate);
-      audio.removeEventListener('durationchange', onDurationChange);
-      audio.removeEventListener('play', onPlay);
-      audio.removeEventListener('pause', onPause);
-      audio.removeEventListener('waiting', onWaiting);
-      audio.removeEventListener('playing', onPlaying);
-      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
-      audio.removeEventListener('error', onError);
-      audio.pause();
-    };
+    return audio;
   }, []);
+
+  // 初始化 Audio 实例
+  useEffect(() => {
+    const audio = createMediaElement();
+    audioRef.current = audio;
+    return () => {
+      audio.pause();
+      audio.removeAttribute('src');
+      effectChainRef.current?.dispose();
+      effectChainRef.current = null;
+    };
+  }, [createMediaElement]);
+
+  /** 用全新的媒体元素顶替当前元素，保留曲目与进度（MediaElementSource 无法解绑时的唯一出路） */
+  const swapMediaElement = useCallback(
+    (crossOrigin: boolean): HTMLAudioElement => {
+      const prev = audioRef.current;
+      const src = prev?.src ?? '';
+      const at = prev?.currentTime ?? 0;
+      const wasPlaying = prev ? !prev.paused : false;
+
+      const next = createMediaElement();
+      next.crossOrigin = crossOrigin ? 'anonymous' : null;
+      audioRef.current = next;
+
+      effectChainRef.current?.dispose();
+      effectChainRef.current = null;
+
+      prev?.pause();
+      prev?.removeAttribute('src');
+
+      if (src) {
+        if (at > 0) pendingSeekRef.current = at;
+        next.src = src;
+        if (wasPlaying) next.play().catch(() => {});
+      }
+      return next;
+    },
+    [createMediaElement]
+  );
 
   // ===== 记忆播放状态：音量 / 播放模式 / 上次播放的歌单、歌曲与进度 =====
   const PLAYBACK_STORE_FILE = 'kugou_playback.json';
@@ -269,6 +337,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const refreshUserSettings = useCallback(async () => {
     const settings = await getUserSettings();
     setUserSettings(settings);
+    setAudioQualityState(audioQualityOption(settings.audioQuality).id);
+    setAudioEffectState(audioEffectPreset(settings.audioEffect).id);
   }, []);
 
   // 拉取概念版 VIP 实时状态（设置弹窗打卡后也会调用以刷新标识）
@@ -418,43 +488,83 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [currentTime, lyrics]);
 
   // 播放单曲核心逻辑
-  const playSong = async (song: KuGouSong, opts?: { insertFront?: boolean }) => {
+  // reload：同一首歌换音源（切音质 / 重挂音效），不动队列、歌词与播放进度
+  const playSong = async (
+    song: KuGouSong,
+    opts?: { insertFront?: boolean; reload?: { startAt: number; autoplay: boolean } }
+  ) => {
     const requestId = ++playRequestIdRef.current;
+    const reload = opts?.reload;
 
-    // 维护独立播放队列：队列中不存在时按需插入
-    // （搜索结果插到最前面，其余场景追加到末尾；已存在则直接播放不重复添加）
-    setQueue((prev) => {
-      if (prev.some((s) => s.hash && s.hash === song.hash)) return prev;
-      return opts?.insertFront ? [song, ...prev] : [...prev, song];
-    });
+    if (!reload) {
+      // 维护独立播放队列：队列中不存在时按需插入
+      // （搜索结果插到最前面，其余场景追加到末尾；已存在则直接播放不重复添加）
+      setQueue((prev) => {
+        if (prev.some((s) => s.hash && s.hash === song.hash)) return prev;
+        return opts?.insertFront ? [song, ...prev] : [...prev, song];
+      });
+
+      setCurrentSong(song);
+      setAudioSourceInfo(null);
+      setCurrentTime(0);
+      setDuration(0);
+      setLyrics([]);
+
+      // 异步拉取歌词
+      fetchSongLyrics(song).then((lines) => setLyrics(lines));
+    }
 
     // 先停掉并卸载旧音源，避免新歌解析失败时继续播放上一首。
-    const audio = audioRef.current;
+    let audio = audioRef.current;
     if (audio) {
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
     }
 
-    setCurrentSong(song);
     setErrorMsg(null);
     setIsLoadingAudio(true);
-    setAudioSourceInfo(null);
-    setCurrentTime(0);
-    setDuration(0);
-    setLyrics([]);
-
-    // 异步拉取歌词
-    fetchSongLyrics(song).then((lines) => setLyrics(lines));
 
     try {
       const sourceResult = await resolveAudioSource(song);
       if (playRequestIdRef.current !== requestId) return;
       setAudioSourceInfo(sourceResult);
 
-      if (audioRef.current) {
-        audioRef.current.src = sourceResult.url;
-        await audioRef.current.play().then(() => {
+      // 音效要走 Web Audio：跨域未放行的资源接进音频图只会输出静音，
+      // 所以挂链前先探一次 CORS；已绑过图的元素遇到不支持的音源只能整个换掉。
+      const effectId = audioEffectRef.current;
+      let effectOn = false;
+      if (effectId !== 'off') {
+        const allowed = await checkAudioCors(sourceResult.url);
+        if (playRequestIdRef.current !== requestId) return;
+        setEffectBlocked(!allowed);
+        if (allowed) {
+          audio = audioRef.current;
+          if (audio) audio.crossOrigin = 'anonymous';
+          effectOn = true;
+        } else if (effectChainRef.current) {
+          audio = swapMediaElement(false);
+        }
+      } else {
+        setEffectBlocked(false);
+      }
+
+      audio = audioRef.current;
+      if (!audio) return;
+
+      if (reload && reload.startAt > 0) pendingSeekRef.current = reload.startAt;
+      audio.src = sourceResult.url;
+
+      if (effectOn) {
+        if (!effectChainRef.current) effectChainRef.current = new AudioEffectChain(audio);
+        effectChainRef.current.setPreset(effectId);
+        void effectChainRef.current.resume();
+      }
+
+      if (reload && !reload.autoplay) {
+        audio.load();
+      } else {
+        await audio.play().then(() => {
           if (playRequestIdRef.current !== requestId) {
             audioRef.current?.pause();
           }
@@ -584,23 +694,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     await savePlaybackPrefs({ song: null, position: 0, queue: [] });
   }, [savePlaybackPrefs]);
 
-  // 监听歌曲自然播放结束
+  // 媒体元素里的「自然播放结束」读的是 ref，这里同步最新的 nextSong
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const onEnded = () => {
-      if (playMode === 'single') {
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-      } else {
-        nextSong();
-      }
-    };
-
-    audio.addEventListener('ended', onEnded);
-    return () => audio.removeEventListener('ended', onEnded);
-  }, [playMode, nextSong]);
+    nextSongRef.current = nextSong;
+  }, [nextSong]);
 
   const seek = (time: number) => {
     const audio = audioRef.current;
@@ -645,6 +742,57 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const modes: PlayMode[] = ['sequence', 'loop', 'single', 'random'];
     const nextIndex = (modes.indexOf(playMode) + 1) % modes.length;
     setPlayMode(modes[nextIndex]);
+  };
+
+  // 切音质：落盘后立刻用新档位重解析当前曲目，进度与播放状态原样接续
+  const setAudioQuality = (quality: AudioQuality) => {
+    if (quality === audioQualityRef.current) return;
+    audioQualityRef.current = quality;
+    setAudioQualityState(quality);
+    void saveUserSettings({ audioQuality: quality }).then(setUserSettings);
+
+    const audio = audioRef.current;
+    if (currentSong && audioSourceInfo && audio) {
+      void playSong(currentSong, {
+        reload: { startAt: audio.currentTime, autoplay: isPlaying },
+      });
+    }
+  };
+
+  // 切音效：已挂上音频图就直接改增益，没挂就探测 CORS 后重建元素再挂
+  const setAudioEffect = async (effect: AudioEffectId) => {
+    audioEffectRef.current = effect;
+    setAudioEffectState(effect);
+    void saveUserSettings({ audioEffect: effect }).then(setUserSettings);
+
+    if (effect === 'off') {
+      // 关掉音效就换回不带跨域约束的元素，别让后续备轨音源被静音
+      if (effectChainRef.current) swapMediaElement(false);
+      setEffectBlocked(false);
+      return;
+    }
+
+    if (effectChainRef.current) {
+      effectChainRef.current.setPreset(effect);
+      await effectChainRef.current.resume();
+      return;
+    }
+
+    const url = audioRef.current?.src ?? '';
+    // 还没解析出音源：记住档位，下一首载入时自动挂链
+    if (!url) return;
+
+    if (!(await checkAudioCors(url))) {
+      setEffectBlocked(true);
+      return;
+    }
+
+    const audio = swapMediaElement(true);
+    const chain = new AudioEffectChain(audio);
+    chain.setPreset(effect);
+    effectChainRef.current = chain;
+    await chain.resume();
+    setEffectBlocked(false);
   };
 
   const selectPlaylist = async (playlist: KuGouPlaylist) => {
@@ -716,7 +864,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     }
 
-    const updatedSongs = [song, ...target.songs];
+    // 列表按倒序展示（最新在前），新歌追加到数组末尾才会出现在第一位
+    const updatedSongs = [...target.songs, song];
     const updatedPlaylist: KuGouPlaylist = {
       ...target,
       songs: updatedSongs,
@@ -734,6 +883,53 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return {
       success: true,
       message: `已加入《${target.name}》${cloudNotice}`,
+    };
+  };
+
+  const removeSongFromPlaylist = async (
+    song: KuGouSong,
+    playlistId: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const target = playlists.find((p) => p.id === playlistId);
+    if (!target) {
+      return { success: false, message: '未找到目标歌单' };
+    }
+
+    let cloudNotice = '';
+    // 云端歌单先删云端：失败就保留本地，避免本地与账号两边状态不一致
+    if (target.isUserOwned && target.listId && userSettings?.kugouToken && userSettings?.kugouUserId) {
+      const cloudRes = await removeSongFromUserCloudPlaylist(
+        song,
+        target.listId,
+        userSettings.kugouToken,
+        userSettings.kugouUserId,
+        userSettings.kugouAppId
+      );
+      if (!cloudRes.success) {
+        return { success: false, message: `云端删除失败: ${cloudRes.message}` };
+      }
+      cloudNotice = '，已同步删除酷狗云端';
+    }
+
+    const updatedSongs = target.songs.filter(
+      (s) => s.hash.toLowerCase() !== song.hash.toLowerCase()
+    );
+    const updatedPlaylist: KuGouPlaylist = {
+      ...target,
+      songs: updatedSongs,
+      totalSongs: updatedSongs.length,
+    };
+
+    const nextPlaylists = playlists.map((p) => (p.id === playlistId ? updatedPlaylist : p));
+    setPlaylists(nextPlaylists);
+    if (activePlaylist?.id === playlistId) {
+      setActivePlaylist(updatedPlaylist);
+    }
+    await saveAllPlaylistsToStorage(nextPlaylists);
+
+    return {
+      success: true,
+      message: `已从《${target.name}》移除${cloudNotice}`,
     };
   };
 
@@ -879,6 +1075,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         vipStatus,
         refreshVipStatus,
         addSongToPlaylist,
+        removeSongFromPlaylist,
 
         currentSong,
         isPlaying,
@@ -890,6 +1087,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         isLoadingAudio,
         audioSourceInfo,
         errorMsg,
+        audioQuality,
+        setAudioQuality,
+        audioEffect,
+        setAudioEffect,
+        effectBlocked,
         queueSongs,
         clearQueue,
 

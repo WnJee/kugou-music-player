@@ -903,6 +903,7 @@ export async function fetchUserCloudPlaylistTracks(
     sqhash?: string;
     mixsongid?: string | number;
     audioid?: string | number;
+    fileid?: string | number;
   }
 
   interface TrackListResponse {
@@ -934,6 +935,7 @@ export async function fetchUserCloudPlaylistTracks(
           coverUrl: formatCoverUrl(item.album_s_img || item.pic),
           sqHash: item.sqhash ? item.sqhash.toLowerCase() : undefined,
           mixSongId: String(item.mixsongid || item.audioid || ''),
+          fileId: item.fileid ? String(item.fileid) : undefined,
         };
       })
       .filter((s) => Boolean(s.hash));
@@ -1127,6 +1129,102 @@ export async function addSongToUserCloudPlaylist(
 
     if (res && (res.status === 1 || res.error_code === 0)) {
       return { success: true, message: '已成功添加并同步至酷狗账号！' };
+    }
+    return {
+      success: false,
+      message: res?.error || `酷狗云端响应异常 (code: ${res?.error_code || res?.status})`,
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : '网络同步请求失败',
+    };
+  }
+}
+
+/**
+ * 从酷狗云端歌单删除指定曲目。
+ *
+ * 网关路由 v4/delete_songs 必须带 x-router 才能命中 cloudlist 服务，
+ * 且删除以歌单内条目 fileid 为准，歌曲 hash 不参与定位。
+ */
+export async function removeSongFromUserCloudPlaylist(
+  song: KuGouSong,
+  listId: string,
+  token: string,
+  userid: string,
+  kugouAppId?: number
+): Promise<{ success: boolean; message: string }> {
+  if (!token || !userid || !listId) {
+    return { success: false, message: '缺少登录态或歌单 ID' };
+  }
+
+  const mid = await getDeviceMid();
+
+  // 搜索结果与本地缓存里没有 fileid，只能回云端列表按 hash 定位条目
+  let fileId = song.fileId;
+  if (!fileId) {
+    const cloudSongs = await fetchUserCloudPlaylistTracks(listId, token, userid, kugouAppId);
+    fileId = cloudSongs.find((s) => s.hash === song.hash.toLowerCase())?.fileId;
+    if (!fileId) {
+      return { success: false, message: '云端歌单中没有找到这首歌曲' };
+    }
+  }
+
+  const body = {
+    listid: Number(listId),
+    userid: Number(userid),
+    data: [{ fileid: Number(fileId) }],
+    type: 0,
+    token,
+    list_ver: 0,
+  };
+
+  const url = 'https://gateway.kugou.com/v4/delete_songs';
+
+  const requestOnce = async (
+    platform: GatewayPlatform
+  ): Promise<{ status: number; error_code?: number; error?: string } | null> => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      appid: platform.appid,
+      clienttime: timestamp,
+      clientver: platform.clientver,
+      dfid: '-',
+      mid,
+      plat: 1,
+      token,
+      userid: Number(userid),
+      uuid: '-',
+    };
+    params.signature = signKuGouAndroidBody(params, body, platform.signatureSalt);
+
+    return httpPost<{ status: number; error_code?: number; error?: string }>(url, body, {
+      query: params,
+      headers: {
+        ...DEFAULT_GATEWAY_HEADERS,
+        'x-router': 'cloudlist.service.kugou.com',
+        clienttime: String(timestamp),
+        mid,
+        token,
+        userid,
+      },
+    });
+  };
+
+  try {
+    const platform = platformOfAppId(kugouAppId);
+    let res = await requestOnce(platform);
+
+    if (res && res.status !== 1 && res.error_code !== 0) {
+      if (res.error_code === 20017 || res.error_code === 20006) {
+        const retry = await requestOnce(otherPlatform(platform));
+        if (retry && (retry.status === 1 || retry.error_code === 0)) res = retry;
+      }
+    }
+
+    if (res && (res.status === 1 || res.error_code === 0)) {
+      return { success: true, message: '已从酷狗云端歌单删除' };
     }
     return {
       success: false,

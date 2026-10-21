@@ -8,12 +8,14 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
+  Check,
   FolderPlus,
   Loader2,
   Plus,
   Play,
   Search,
   Settings,
+  Trash2,
   X,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
@@ -53,7 +55,16 @@ const SongCover: React.FC<{ song: KuGouSong }> = ({ song }) =>
   );
 
 export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings }) => {
-  const { playlists, activePlaylist, selectPlaylist, currentSong, isPlaying, playSong, playAll } = usePlayer();
+  const {
+    playlists,
+    activePlaylist,
+    selectPlaylist,
+    currentSong,
+    isPlaying,
+    playSong,
+    playAll,
+    removeSongFromPlaylist,
+  } = usePlayer();
   const [searchQuery, setSearchQuery] = useState('');
   const [isPlaylistDrawerOpen, setIsPlaylistDrawerOpen] = useState(false);
 
@@ -62,6 +73,27 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
   const [globalResults, setGlobalResults] = useState<KuGouSong[]>([]);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [selectedSongForAdd, setSelectedSongForAdd] = useState<KuGouSong | null>(null);
+
+  const [pendingRemoveSong, setPendingRemoveSong] = useState<KuGouSong | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
+  const [removeNotice, setRemoveNotice] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(
+    null
+  );
+
+  const handleConfirmRemove = async () => {
+    if (!pendingRemoveSong || !activePlaylist) return;
+    setIsRemoving(true);
+    setRemoveNotice(null);
+    const res = await removeSongFromPlaylist(pendingRemoveSong, activePlaylist.id);
+    setIsRemoving(false);
+    setRemoveNotice({ tone: res.success ? 'ok' : 'danger', text: res.message });
+    if (res.success) {
+      setTimeout(() => {
+        setPendingRemoveSong(null);
+        setRemoveNotice(null);
+      }, 1100);
+    }
+  };
 
   const handleTriggerGlobalSearch = async (kw?: string) => {
     const target = (kw !== undefined ? kw : searchQuery).trim();
@@ -562,11 +594,24 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                             e.stopPropagation();
                             setSelectedSongForAdd(song);
                           }}
-                          className="icon-btn opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                          className="icon-btn opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                           style={{ width: 26, height: 26 }}
                           title="加入其他歌单"
                         >
                           <Plus size={14} strokeWidth={1.8} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRemoveNotice(null);
+                            setPendingRemoveSong(song);
+                          }}
+                          className="icon-btn opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                          style={{ width: 26, height: 26 }}
+                          title="从歌单移除"
+                        >
+                          <Trash2 size={14} strokeWidth={1.8} />
                         </button>
                       </span>
                     </div>
@@ -673,6 +718,86 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
         song={selectedSongForAdd}
         onClose={() => setSelectedSongForAdd(null)}
       />
+
+      {pendingRemoveSong &&
+        createPortal(
+          <div
+            className="overlay"
+            role="presentation"
+            onClick={() => {
+              if (!isRemoving) {
+                setPendingRemoveSong(null);
+                setRemoveNotice(null);
+              }
+            }}
+          >
+            <div
+              className="sheet"
+              style={{ maxWidth: 380 }}
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label="从歌单移除"
+            >
+              <div className="sheet-head-row">
+                <div className="min-w-0 flex-1">
+                  <h2 className="sheet-title truncate">移除《{pendingRemoveSong.songName}》？</h2>
+                  <p className="sheet-sub truncate">
+                    {activePlaylist?.isUserOwned ? '酷狗云端歌单将同步删除' : '仅从本地歌单移除'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingRemoveSong(null);
+                    setRemoveNotice(null);
+                  }}
+                  className="icon-btn"
+                  title="关闭"
+                >
+                  <X size={16} strokeWidth={1.8} />
+                </button>
+              </div>
+
+              {removeNotice && (
+                <div className="px-5 pb-1">
+                  <div className="notice" data-tone={removeNotice.tone}>
+                    {removeNotice.tone === 'ok' ? (
+                      <Check size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+                    ) : (
+                      <X size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+                    )}
+                    <span>{removeNotice.text}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 px-5 pb-5 pt-2">
+                <button
+                  type="button"
+                  disabled={isRemoving}
+                  onClick={() => {
+                    setPendingRemoveSong(null);
+                    setRemoveNotice(null);
+                  }}
+                  className="btn"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={isRemoving}
+                  onClick={handleConfirmRemove}
+                  className="btn btn-danger"
+                >
+                  {isRemoving ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} strokeWidth={2} />}
+                  移除
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

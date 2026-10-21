@@ -4,9 +4,10 @@
  * 移动：单张卡片式 Mini 条，热区 ≥44px，避开底部安全区
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ListMusic,
+  LocateFixed,
   Pause,
   Play,
   Repeat,
@@ -22,6 +23,8 @@ import {
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { MobileLyricsModal } from './MobileLyricsModal';
+import { AudioOptionsMenu } from './AudioOptionsMenu';
+import { audioQualityOption } from '../services/audioQuality';
 import type { PlayMode } from '../types/music';
 
 function formatTime(secs: number): string {
@@ -104,12 +107,37 @@ export const PlayerBar: React.FC = () => {
     clearQueue,
   } = usePlayer();
 
+  const queueBodyRef = useRef<HTMLDivElement | null>(null);
+  const [flashHash, setFlashHash] = useState<string | null>(null);
+  const currentHash = currentSong?.hash ?? null;
+
+  const scrollToCurrent = (flash: boolean) => {
+    if (!currentHash) return;
+    const row = queueBodyRef.current?.querySelector<HTMLElement>(
+      `[data-hash="${currentHash}"]`
+    );
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (!flash) return;
+    setFlashHash(currentHash);
+    window.setTimeout(() => setFlashHash(null), 900);
+  };
+
+  // 打开队列直接落到当前播放位置，省掉在长列表里找自己
+  // 只在展开这一刻定位：自动切歌时不打断正在翻队列的手
+  useEffect(() => {
+    if (!isQueueOpen) return;
+    const timer = window.setTimeout(() => scrollToCurrent(false), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isQueueOpen]);
+
   if (!currentSong) return null;
 
   const VolIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
 
   const queueList = (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto" ref={queueBodyRef}>
       {queueSongs.length === 0 ? (
         <div className="empty" style={{ padding: '36px 18px', maxWidth: 'none' }}>
           <p className="empty-title" style={{ fontSize: 'var(--fs-4)' }}>
@@ -129,6 +157,8 @@ export const PlayerBar: React.FC = () => {
               onClick={() => playSong(song)}
               className="row"
               data-playing={isCur}
+              data-hash={song.hash}
+              data-flash={flashHash === song.hash}
               style={{ gridTemplateColumns: '26px minmax(0,1fr) 46px', width: '100%' }}
             >
               <span className="row-idx">
@@ -256,8 +286,8 @@ export const PlayerBar: React.FC = () => {
                     />
                     <span>
                       {audioSourceInfo.source === 'primary'
-                        ? `官方主轨${audioSourceInfo.bitrate ? ` ${audioSourceInfo.bitrate}k` : ''}`
-                        : '备用音轨'}
+                        ? `官方主轨 ${audioQualityOption(audioSourceInfo.quality).badge}`
+                        : `备用音轨 ${audioQualityOption(audioSourceInfo.quality).badge}`}
                     </span>
                   </>
                 ) : null}
@@ -320,8 +350,9 @@ export const PlayerBar: React.FC = () => {
             </div>
           </div>
 
-          {/* 右：音量 */}
+          {/* 右：音质音效 + 音量 */}
           <div className="flex items-center justify-end gap-1" style={{ width: 260 }}>
+            <AudioOptionsMenu />
             <button
               type="button"
               onClick={toggleMute}
@@ -368,6 +399,17 @@ export const PlayerBar: React.FC = () => {
                   {String(queueSongs.length).padStart(2, '0')} 首
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => scrollToCurrent(true)}
+                disabled={!currentHash}
+                className="icon-btn"
+                style={{ width: 26, height: 26 }}
+                title="定位到当前播放"
+                aria-label="定位到当前播放"
+              >
+                <LocateFixed size={13} strokeWidth={1.8} />
+              </button>
               <button
                 type="button"
                 onClick={clearQueue}

@@ -10,6 +10,12 @@ import { md5 } from '../utils/md5';
 import { toSecureImageUrl } from '../utils/url';
 import { httpGet, httpPost, KUGOU_CONCEPT_UA, KUGOU_GATEWAY_UA } from './http';
 import { getDeviceMid } from './device';
+import {
+  audioQualityChain,
+  audioQualityOption,
+  DEFAULT_AUDIO_QUALITY,
+  qualityOfParam,
+} from './audioQuality';
 
 const SETTINGS_STORE_FILE = 'kugou_settings.json';
 const SETTINGS_KEY = 'user_settings';
@@ -20,6 +26,8 @@ const DEFAULT_SETTINGS: UserSettings = {
   autoCheckinVip: true,
   lastCheckinDate: '',
   customFallbackApi: '',
+  audioQuality: DEFAULT_AUDIO_QUALITY,
+  audioEffect: 'off',
 };
 
 let settingsStore: Store | null = null;
@@ -704,17 +712,31 @@ export async function resolveKugouAudioUrl(
 
 /**
  * 主轨：根据歌曲 Hash 获取酷狗官方音频流
+ *
+ * 按用户音质档位请求，授权不足时沿请求链降档重试。试听片段不算成功：
+ * 先继续往下找完整码流，整条链都只有试听才把第一段试听交回去。
  */
 export async function fetchPrimaryOfficialAudio(
   song: KuGouSong,
   settings: UserSettings
 ): Promise<AudioSourceResult | null> {
-  const attempts: Array<number | string> = [128, 128, '128'];
+  const requested = audioQualityOption(settings.audioQuality).id;
+  const attempts = audioQualityChain(settings.audioQuality);
   let lastFailure: TrackerAttempt | null = null;
+  let trial: AudioSourceResult | null = null;
 
   for (const quality of attempts) {
     const attempt = await resolveKugouAudioUrl(song, settings, quality);
-    if (attempt.result) return attempt.result;
+    if (attempt.result) {
+      const result: AudioSourceResult = {
+        ...attempt.result,
+        quality: qualityOfParam(quality),
+        requestedQuality: requested,
+      };
+      if (!result.isTrial) return result;
+      if (!trial) trial = result;
+      continue;
+    }
     lastFailure = attempt;
   }
 
@@ -723,7 +745,7 @@ export async function fetchPrimaryOfficialAudio(
       `[fetchPrimaryOfficialAudio] 官方音源未授权/未获取成功: ${lastFailure.errorCode} ${lastFailure.errorMsg || ''}`
     );
   }
-  return null;
+  return trial;
 }
 
 /**
@@ -738,6 +760,7 @@ export async function fetchFallbackAudio(
   const cleanSongName = song.songName.trim();
   const cleanSinger = song.singerName.trim();
   const targetDuration = song.duration;
+  const requestedQuality = audioQualityOption(settings.audioQuality).id;
 
   // 1. 若配置了自定义 Fallback 聚合 API，优先使用
   if (settings.customFallbackApi) {
@@ -754,6 +777,8 @@ export async function fetchFallbackAudio(
           source: 'fallback',
           duration: res.duration || targetDuration,
           isTrial: false,
+          quality: '128',
+          requestedQuality,
           msg: '自定义备轨音源',
         };
       }
@@ -826,6 +851,8 @@ export async function fetchFallbackAudio(
             ...resolved,
             source: 'fallback',
             isTrial: false,
+            quality: '128',
+            requestedQuality,
             msg: '备轨：已自动匹配同款完整免费曲目',
           };
         }
@@ -847,6 +874,8 @@ export async function fetchFallbackAudio(
         source: 'fallback',
         duration: targetDuration,
         isTrial: false,
+        quality: '128',
+        requestedQuality,
         msg: '备轨：公共聚合镜像音源',
       };
     }

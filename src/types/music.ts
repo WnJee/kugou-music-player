@@ -21,6 +21,8 @@ export interface KuGouSong {
   audioUrl?: string;
   /** 酷狗内部歌曲 ID (MixSongID) */
   mixSongId?: string;
+  /** 云端歌单内该曲目的条目 ID，删除云端歌曲时使用 */
+  fileId?: string;
 }
 
 export interface KuGouPlaylist {
@@ -89,7 +91,17 @@ export interface UserSettings {
   customFallbackApi: string;
   /** 登录平台 appid（3116=概念版，1005=标准版；决定网关签名与鉴权平台） */
   kugouAppId?: number;
+  /** 音质档位 */
+  audioQuality?: AudioQuality;
+  /** 音效档位 */
+  audioEffect?: AudioEffectId;
 }
+
+/** 音质档位：标准 128 / 高音质 320 / 无损 FLAC / 高解析 Hi-Res */
+export type AudioQuality = '128' | '320' | 'flac' | 'hires';
+
+/** 音效档位：原声 / 人声 / 低音 / 摇滚 / 现场 / 夜间 */
+export type AudioEffectId = 'off' | 'lily' | 'hifi' | 'car' | 'live' | 'rock';
 
 export interface AudioSourceResult {
   /** 音频直链播放地址 */
@@ -102,6 +114,10 @@ export interface AudioSourceResult {
   duration: number;
   /** 是否为试听片段 (如 <= 60s) */
   isTrial: boolean;
+  /** 实际到手的音质档位（可能因授权不足低于请求档位） */
+  quality?: AudioQuality;
+  /** 用户请求的音质档位 */
+  requestedQuality?: AudioQuality;
   /** 提示消息 */
   msg?: string;
 }

@@ -1065,10 +1065,10 @@
     gap: 2px;
   }
 
-  /* 移动端：序号 + 标题 + 操作 */
+  /* 移动端：序号 + 标题 + 操作（两个操作键 26px + 间距） */
   .row,
   .list-head {
-    grid-template-columns: 26px minmax(0, 1fr) 32px;
+    grid-template-columns: 26px minmax(0, 1fr) 56px;
   }
 
   .list-head,
@@ -1091,11 +1091,11 @@
   @media (min-width: 1280px) {
     .list-head {
       display: grid;
-      grid-template-columns: 30px minmax(0, 1fr) 168px 74px 72px;
+      grid-template-columns: 30px minmax(0, 1fr) 168px 74px 88px;
     }
 
     .row {
-      grid-template-columns: 30px minmax(0, 1fr) 168px 74px 72px;
+      grid-template-columns: 30px minmax(0, 1fr) 168px 74px 88px;
     }
 
     .row-artist {
@@ -1897,6 +1897,148 @@
     border-radius: 0 var(--r-3) var(--r-3) 0;
     padding-bottom: env(safe-area-inset-bottom);
     animation: slide-right var(--dur-slow) var(--ease);
+  }
+
+  /* ===== 音质 / 音效面板 ============================================ */
+  .aom {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .aom-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    width: auto;
+    padding: 0 8px;
+  }
+
+  .aom-badge {
+    font-size: var(--fs-1);
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+
+  .aom-trigger[data-on='true'] .aom-badge {
+    color: var(--accent-ink);
+  }
+
+  .aom-pop {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 60;
+    width: 236px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    background: var(--raise);
+    box-shadow: 0 24px 60px -28px #000;
+    animation: rise-sm var(--dur) var(--ease);
+  }
+
+  .aom-pop[data-dir='down'] {
+    top: calc(100% + 8px);
+    bottom: auto;
+  }
+
+  .aom-group {
+    padding: 6px 6px 8px;
+  }
+
+  .aom-group + .aom-group {
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .aom-group > .microcaps {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .aom-opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 8px;
+    margin-top: 2px;
+    border-radius: var(--r-1);
+    font-size: var(--fs-2);
+    color: var(--ink-1);
+    text-align: left;
+    transition: background-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+
+  .aom-opt:hover {
+    background: var(--lift);
+    color: var(--ink-0);
+  }
+
+  .aom-opt[data-active='true'] {
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
+
+  .aom-spec {
+    font-size: var(--fs-1);
+    letter-spacing: 0.02em;
+    color: var(--ink-3);
+  }
+
+  .aom-opt[data-active='true'] .aom-spec {
+    color: color-mix(in oklab, var(--accent-ink) 70%, var(--ink-2));
+  }
+
+  .aom-chips {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .aom-chip {
+    padding: 7px 0;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-1);
+    font-size: var(--fs-2);
+    color: var(--ink-2);
+    transition: color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease),
+      background-color var(--dur) var(--ease);
+  }
+
+  .aom-chip:hover {
+    color: var(--ink-0);
+    border-color: var(--line);
+  }
+
+  .aom-chip[data-active='true'] {
+    color: var(--accent-ink);
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+  }
+
+  .aom-note {
+    margin-top: 6px;
+    font-size: var(--fs-1);
+    color: var(--ink-3);
+  }
+
+  /* 队列定位：当前播放行闪一下，让眼睛接住滚动终点 */
+  @keyframes row-flash {
+    from {
+      background: color-mix(in oklab, var(--accent) 26%, transparent);
+    }
+    to {
+      background: transparent;
+    }
+  }
+
+  .row[data-flash='true'] {
+    animation: row-flash 900ms var(--ease);
   }
 
   /* ===== 动画 ======================================================== */
