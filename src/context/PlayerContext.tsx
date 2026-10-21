@@ -110,6 +110,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const playRequestIdRef = useRef(0);
   // 恢复上次播放进度时暂存的目标位置，待音频元数据加载完成后定位
   const pendingSeekRef = useRef<number | null>(null);
+  // 音源异常后自动跳过的触发口：改由下面的 effect 绑定，避免与 nextSong 的声明顺序互相牵扯
+  const skipBrokenRef = useRef<(reason: unknown) => void>(() => {});
   // 初始化 Audio 实例
   useEffect(() => {
     const audio = new Audio();
@@ -131,6 +133,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const onPause = () => setIsPlaying(false);
     const onWaiting = () => setIsLoadingAudio(true);
     const onPlaying = () => setIsLoadingAudio(false);
+    // 地址解析成功但流本身不可用（404 / 换源 / 解码失败）时 media 元素只抛 error，不会自己往下走
+    const onError = () => {
+      const audio = audioRef.current;
+      if (!audio?.src) return;
+      const code = audio.error?.code;
+      setErrorMsg(audio.error?.message || `音源错误${code ? ` (${code})` : ''}`);
+      setIsPlaying(false);
+      setIsLoadingAudio(false);
+      skipBrokenRef.current(audio.error ?? 'media error');
+    };
     // 恢复上次播放进度：待元数据加载完成后定位
     const onLoadedMetadata = () => {
       if (pendingSeekRef.current != null) {
@@ -150,6 +162,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     audio.addEventListener('waiting', onWaiting);
     audio.addEventListener('playing', onPlaying);
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('error', onError);
 
     return () => {
       audio.removeEventListener('timeupdate', onTimeUpdate);
@@ -159,6 +172,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.removeEventListener('waiting', onWaiting);
       audio.removeEventListener('playing', onPlaying);
       audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('error', onError);
       audio.pause();
     };
   }, []);
@@ -452,6 +466,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const msg = err instanceof Error ? err.message : '播放失败';
       setErrorMsg(msg);
       setIsPlaying(false);
+      skipBrokenRef.current(err);
     } finally {
       setIsLoadingAudio(false);
     }
@@ -469,7 +484,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       void playSong(currentSong);
       return;
     }
-    void audioRef.current.play().catch((e) => console.warn('播放恢复受阻:', e));
+    // 已解析过但地址已失效（签名过期 / 源站换链）时 play() 同样会被拒，一并往前跳
+    audioRef.current.play().catch((e) => {
+      console.warn('播放恢复受阻:', e);
+      skipBrokenRef.current(e);
+    });
   };
 
   // 获取下一曲索引（基于独立播放队列）
@@ -496,6 +515,32 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       playSong(queue[nextIdx]);
     }
   }, [queue, getNextSongIndex]);
+
+  // 音源异常（解析不出地址 / 媒体元素报错）时自动跳下一首，不让播放停在这首上
+  const AUTO_SKIP_LIMIT = 5;
+  // failed: 本轮连续坏掉的歌，既用于挡同一首的重复报错，也用于卡死上限
+  const autoSkipRef = useRef<{ failed: Set<string> }>({ failed: new Set() });
+  useEffect(() => {
+    skipBrokenRef.current = (reason) => {
+      console.warn('[PlayerContext] 音源异常，自动跳过:', reason);
+      const hash = currentSong?.hash ?? '';
+      const { failed } = autoSkipRef.current;
+      // 同一首坏音源会同时抛 media error 和 play() 拒绝，只处理第一次
+      if (failed.has(hash)) return;
+      // 整队列都播不了时不能无限轮转，连续失败攒够上限就停在这里
+      if (failed.size >= AUTO_SKIP_LIMIT) {
+        setErrorMsg('队列中没有可播放的音源');
+        return;
+      }
+      failed.add(hash);
+      nextSong();
+    };
+  }, [currentSong, nextSong]);
+
+  // 用户换了队列（播放全部 / 清空 / 插入新歌）就当作新一轮，失败记录作废
+  useEffect(() => {
+    autoSkipRef.current.failed.clear();
+  }, [queue]);
 
   // 上一曲
   const prevSong = () => {
