@@ -74,7 +74,7 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-  # 安卓: Debug 签名 APK（arm64 + armv7）
+  # 安卓: Release 签名 APK（arm64-v8a 覆盖麒麟980等主流64位芯片 + armv7 兼容老设备）
   android:
     needs: create-release
     runs-on: ubuntu-latest
@@ -109,7 +109,36 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Android APK (debug signed)
+      # 从 secrets 还原正式签名密钥并生成 keystore.properties（供 build.gradle.kts 读取）
+      - name: Restore release keystore
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ]; then
+            cd src-tauri/gen/android
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > keystore.jks
+            {
+              echo "storeFile=keystore.jks"
+              echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+              echo "keyAlias=$ANDROID_KEY_ALIAS"
+              echo "keyPassword=${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+            } > keystore.properties
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS secrets，安卓包回退为 debug 签名"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Android APK (release signed)
+        if: steps.keystore.outputs.signed == 'true'
+        run: npx tauri android build --apk --target aarch64 --target armv7
+
+      - name: Build Android APK (debug fallback)
+        if: steps.keystore.outputs.signed != 'true'
         run: npx tauri android build --apk --debug --target aarch64 --target armv7
 
       - name: Upload APKs to release
@@ -117,11 +146,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd src-tauri/gen/android/app/build/outputs/apk
-          # 自动定位 APK，兼容 universal 合并与分 ABI 两种输出布局
+          # 自动定位 APK，兼容 universal 合并与分 ABI 两种输出布局，
+          # 以及 release 输出的多一层 buildType 目录（apk/<abi>/release/*.apk）
           shopt -s nullglob
           found=0
           for f in $(find . -name '*.apk'); do
             abi=$(basename "$(dirname "$f")")
+            case "$abi" in
+              release|debug) abi=$(basename "$(dirname "$(dirname "$f")")") ;;
+            esac
             case "$abi" in
               universal) out="KuGouPlayer-${{ github.ref_name }}-android-universal.apk" ;;
               aarch64)   out="KuGouPlayer-${{ github.ref_name }}-android-arm64.apk" ;;

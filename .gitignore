@@ -34,6 +34,9 @@ pnpm-debug.log*
 .vscode/
 .idea/
 *.keystore
+*.jks
+# Android 正式签名配置（由 CI 从 secrets 生成，禁止入库）
+src-tauri/gen/android/keystore.properties
 
 # 原子写入临时目录（会让 Vite watcher 在 Windows 上 EBUSY 崩溃）
 *.tmpdir/
