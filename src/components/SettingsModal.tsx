@@ -45,6 +45,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [isQrLoading, setIsQrLoading] = useState<boolean>(false);
 
   const [isCheckinLoading, setIsCheckinLoading] = useState(false);
+  const [checkinProgress, setCheckinProgress] = useState<string | null>(null);
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showManualAuth, setShowManualAuth] = useState(false);
@@ -169,14 +170,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     if (!settings.kugouToken || !settings.kugouUserId) return;
     setIsCheckinLoading(true);
     setCheckinMessage(null);
+    setCheckinProgress('正在连接服务端…');
     try {
-      const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId);
+      const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId, (msg) =>
+        setCheckinProgress(msg)
+      );
       setCheckinMessage(res.message);
       await refreshVipStatus();
       const updated = await getUserSettings();
       setSettings(updated);
+    } catch (err) {
+      console.error('[SettingsModal] 手动打卡失败:', err);
+      setCheckinMessage(err instanceof Error ? err.message : '打卡网络异常');
     } finally {
       setIsCheckinLoading(false);
+      setCheckinProgress(null);
     }
   };
 
@@ -547,11 +555,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     style={{ height: 28, fontSize: 'var(--fs-2)' }}
                   >
                     {isCheckinLoading ? (
-                      <Loader2 size={12} className="spin" />
+                      <>
+                        <Loader2 size={12} className="spin" />
+                        {checkinProgress || '打卡中…'}
+                      </>
                     ) : (
-                      <CheckCircle2 size={12} strokeWidth={1.8} />
+                      <>
+                        <CheckCircle2 size={12} strokeWidth={1.8} />
+                        立即打卡
+                      </>
                     )}
-                    立即打卡
                   </button>
                 </div>
 

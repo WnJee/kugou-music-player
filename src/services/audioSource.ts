@@ -285,6 +285,11 @@ const CLAIM_RATE_LIMITED = 30000;
 const CLAIM_QUOTA_EXHAUSTED = 30002;
 const CLAIM_RATE_RETRY = 3;
 const CLAIM_RETRY_BACKOFF_MS = 15000;
+/** 整个签到流程的硬时限：超过即按当前结果收尾，避免 UI 无限转圈 */
+const CLAIM_TOTAL_DEADLINE_MS = 90000;
+
+/** 签到进度回调：向 UI 实时播报领取进展 */
+export type CheckinProgressHandler = (message: string) => void;
 
 /**
  * 酷狗概念版每日领取 VIP（已实测可用的官方接口，2025+ 版本）
@@ -297,10 +302,11 @@ const CLAIM_RETRY_BACKOFF_MS = 15000;
 async function checkinConceptVipWith(
   token: string,
   userid: string,
-  platform: GatewayPlatform
-): Promise<{ success: boolean; message: string }> {
+  platform: GatewayPlatform,
+  onProgress?: CheckinProgressHandler
+): Promise<{ success: boolean; message: string; serverTouched: boolean }> {
   if (!token || !userid) {
-    return { success: false, message: '未配置 Token 或 UserID' };
+    return { success: false, message: '未配置 Token 或 UserID', serverTouched: false };
   }
 
   const mid = await getDeviceMid();
@@ -364,12 +370,20 @@ async function checkinConceptVipWith(
 
     // 2. 广告播放上报领取会员时长：每日最多 8 次，data.remain 归零即今日领满
     //    30000 是接口限流（非业务失败），退避后重试，不计入领取次数
+    //    只要服务端返回过 status===1 即视为时长已到账（serverTouched），后续以当前结果收尾，
+    //    避免响应字段缺失时 UI 一直转圈（服务端实际已签到成功）
     let claimed = 0;
     let remain: number | undefined;
     let quotaExhausted = false;
+    let serverTouched = false;
     let lastMsg = '';
     let rateLimited = 0;
+    const deadline = Date.now() + CLAIM_TOTAL_DEADLINE_MS;
     for (let attempt = 1; attempt <= CLAIM_MAX_ATTEMPTS && claimed < CLAIM_DAILY_TOTAL; attempt++) {
+      if (Date.now() > deadline) {
+        lastMsg = lastMsg || '领取耗时过长，已提前结束';
+        break;
+      }
       const now = Date.now();
       const ad = await kgPost<{
         status: number;
@@ -388,8 +402,12 @@ async function checkinConceptVipWith(
 
       if (ad?.status === 1) {
         rateLimited = 0;
+        serverTouched = true;
         remain = ad.data?.remain ?? remain;
         if ((ad.data?.award_vip_hour ?? 0) > 0) claimed += 1;
+        onProgress?.(
+          claimed > 0 ? `领取中 ${claimed}/${CLAIM_DAILY_TOTAL} 次…` : '已连接服务端，正在领取…'
+        );
         if (remain === 0) break;
       } else if (ad?.error_code === CLAIM_RATE_LIMITED) {
         rateLimited += 1;
@@ -416,34 +434,45 @@ async function checkinConceptVipWith(
       /* 忽略查询失败 */
     }
 
-    if (claimed > 0 || remain === 0 || quotaExhausted) {
+    if (claimed > 0 || remain === 0 || quotaExhausted || serverTouched) {
       await saveUserSettings({ lastCheckinDate: todayStr });
-      const claimMsg = claimed > 0 ? `成功领取 ${claimed} 次` : '今日次数已领满';
+      const claimMsg =
+        claimed > 0
+          ? `成功领取 ${claimed} 次`
+          : quotaExhausted || remain === 0
+            ? '今日次数已领满'
+            : '已到账（服务端已确认）';
       return {
         success: true,
         message: `概念版 VIP 打卡完成：${claimMsg}${expiryHint}`,
+        serverTouched,
       };
     }
 
     return {
       success: false,
       message: lastMsg || '签到失败：未领取到任何会员时长',
+      serverTouched,
     };
   } catch (err: unknown) {
     console.error('[checkinConceptVip] 签到异常:', err);
     return {
       success: false,
       message: err instanceof Error ? err.message : '签到网络异常',
+      serverTouched: false,
     };
   }
 }
 
 /**
- * 酷狗概念版每日领取 VIP，自动适配登录平台；首次全失败时切换平台重试一次
+ * 酷狗概念版每日领取 VIP，自动适配登录平台；首次全失败时切换平台重试一次。
+ * 注意：只要第一轮有服务端成功响应（时长已可能到账），就不换平台重跑，
+ * 否则整条流程重复执行会让 UI 转圈数分钟。
  */
 export async function checkinConceptVip(
   token: string,
-  userid: string
+  userid: string,
+  onProgress?: CheckinProgressHandler
 ): Promise<{ success: boolean; message: string }> {
   if (!token || !userid) {
     return { success: false, message: '未配置 Token 或 UserID' };
@@ -451,10 +480,11 @@ export async function checkinConceptVip(
 
   const settings = await getUserSettings();
   const primary = platformOf(settings);
-  const first = await checkinConceptVipWith(token, userid, primary);
-  if (first.success) return first;
+  const first = await checkinConceptVipWith(token, userid, primary, onProgress);
+  if (first.success || first.serverTouched) return first;
 
-  const second = await checkinConceptVipWith(token, userid, otherPlatform(primary));
+  onProgress?.('当前平台未到账，切换备用平台重试…');
+  const second = await checkinConceptVipWith(token, userid, otherPlatform(primary), onProgress);
   return second.success ? second : first;
 }
 
