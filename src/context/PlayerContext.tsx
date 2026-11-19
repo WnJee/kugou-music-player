@@ -33,7 +33,7 @@ import {
   removeSongFromUserCloudPlaylist,
 } from '../services/kugouPlaylist';
 import { fetchSongLyrics } from '../services/lyrics';
-import { Store } from '@tauri-apps/plugin-store';
+import { readStoreValue, writeStoreValue } from '../utils/store';
 import { PlaybackProgressProvider, playbackProgress } from './PlaybackProgress';
 
 // 高频进度走独立 hook，对外契约：{ currentTime, duration, seek }
@@ -107,6 +107,8 @@ interface PlayerContextType {
 const PlayerContext = createContext<PlayerContextType | null>(null);
 
 const PLAYBACK_STORE_FILE = 'kugou_playback.json';
+/** 存档键名：与历史版本保持一致，老用户的进度不会丢 */
+const PLAYBACK_KEY = 'last';
 
 /** 播放进度落盘间隔：桌面关窗只是隐藏、托盘退出直接 app.exit、安卓被杀，都拿不到 beforeunload */
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
@@ -391,11 +393,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const savePlaybackPrefs = useCallback((patch: PersistedPlayback): Promise<void> => {
     const run = async () => {
       try {
-        if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
-        const store = await Store.load(PLAYBACK_STORE_FILE);
-        const prev = (await store.get<PersistedPlayback>('last')) || {};
-        await store.set('last', { ...prev, ...patch, savedAt: Date.now() });
-        await store.save();
+        const prev =
+          (await readStoreValue<PersistedPlayback | null>(PLAYBACK_STORE_FILE, PLAYBACK_KEY, null)) ??
+          {};
+        await writeStoreValue(PLAYBACK_STORE_FILE, PLAYBACK_KEY, {
+          ...prev,
+          ...patch,
+          savedAt: Date.now(),
+        });
       } catch (e) {
         console.warn('[PlaybackStore] 保存播放状态失败:', e);
       }
@@ -407,9 +412,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // 启动时恢复上次播放状态（不自动播放，仅定位到上次进度）
   const restorePlayback = useCallback(async () => {
     try {
-      if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
-      const store = await Store.load(PLAYBACK_STORE_FILE);
-      const saved = await store.get<PersistedPlayback>('last');
+      const saved = await readStoreValue<PersistedPlayback | null>(
+        PLAYBACK_STORE_FILE,
+        PLAYBACK_KEY,
+        null
+      );
       if (!saved) return;
 
       // 音量 0 也是合法存档（用户主动拉到 0），不能当成「没有记录」
