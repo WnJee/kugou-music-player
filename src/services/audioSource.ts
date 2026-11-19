@@ -39,8 +39,6 @@ const PRIMARY_RESOLVE_BUDGET_MS = 10000;
 const DEFAULT_SETTINGS: UserSettings = {
   kugouToken: '',
   kugouUserId: '',
-  // 默认关闭自动签到：刷时长的自动链路已删除，签到仅由用户在设置里手动触发（H9）
-  autoCheckinVip: false,
   lastCheckinDate: '',
   customFallbackApi: '',
   audioQuality: DEFAULT_AUDIO_QUALITY,
@@ -336,7 +334,7 @@ async function performCheckinWith(
     }
 
     await saveUserSettings({ lastCheckinDate: todayLocalDate() });
-    return { success: true, message: `签到完成，会员到期时间 ${probe.vipEndTime}` };
+    return { success: true, message: `权益有效，到期时间 ${probe.vipEndTime}（已记录今日打卡）` };
   } catch (err) {
     console.warn('[checkinConceptVip] 签到失败:', err);
     return { success: false, message: err instanceof Error ? err.message : '签到网络异常' };
@@ -366,20 +364,8 @@ export async function checkinConceptVip(
 }
 
 /**
- * 启动时签到：仅在用户显式开启 autoCheckinVip 时执行（默认关闭），且当日未签才执行
+ * 启动时签到已移除：签到只能由用户在设置页手动触发（仍可保留此注释位置给后续扩展）
  */
-export async function tryAutoCheckin(): Promise<void> {
-  const settings = await getUserSettings();
-  if (!settings.autoCheckinVip || !settings.kugouToken || !settings.kugouUserId) return;
-  if (settings.lastCheckinDate === todayLocalDate()) return;
-
-  const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId);
-  if (res.success) {
-    console.info('[tryAutoCheckin] 签到成功:', res.message);
-  } else {
-    console.warn('[tryAutoCheckin] 签到未完成:', res.message);
-  }
-}
 
 interface TrackerV5Response {
   status: number;

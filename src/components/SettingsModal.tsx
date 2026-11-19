@@ -34,7 +34,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [settings, setSettings] = useState<UserSettings>({
     kugouToken: '',
     kugouUserId: '',
-    autoCheckinVip: true,
     lastCheckinDate: '',
     customFallbackApi: '',
   });
@@ -111,13 +110,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 
           await refreshUserSettings();
           await syncCloudPlaylists(true);
-
-          if (updated.kugouToken && updated.kugouUserId) {
-            checkinConceptVip(updated.kugouToken, updated.kugouUserId).then((r) => {
-              setCheckinMessage(r.message);
-              refreshVipStatus();
-            });
-          }
+          refreshVipStatus();
         } else if (checkRes.status === 5) {
           setIsQrExpired(true);
           setQrStatusText('二维码已失效，点击刷新');
@@ -508,34 +501,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
               )}
 
-              {/* 打卡 */}
+              {/* 打卡：只保留手动入口，不再伪造听歌/广告上报去刷时长 */}
               <div className="set-block" style={{ marginTop: 12 }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="set-block-title">启动时自动签到</p>
-                    <p className="set-block-note">每日自动领取概念版会员时长</p>
+                    <p className="set-block-title">每日打卡</p>
+                    <p className="set-block-note">手动校验当前账号会员权益，并记录今日打卡。</p>
                   </div>
-                  <label className="check shrink-0">
-                    <input
-                      type="checkbox"
-                      checked={settings.autoCheckinVip}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setSettings({ ...settings, autoCheckinVip: next });
-                        saveUserSettings({ autoCheckinVip: next });
-                      }}
-                      aria-label="启动时自动签到"
-                    />
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-between gap-3" style={{ marginTop: 12 }}>
                   <span
-                    className="mono"
+                    className="mono shrink-0"
                     style={{ fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}
                   >
                     {settings.lastCheckinDate ? `今日已打卡 ${settings.lastCheckinDate}` : '今日未打卡'}
                   </span>
+                </div>
+
+                <div className="flex justify-end" style={{ marginTop: 12 }}>
                   <button
                     type="button"
                     onClick={handleManualCheckin}

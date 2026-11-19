@@ -87,9 +87,7 @@ export interface UserSettings {
   avatar?: string;
   /** VIP 类型描述 */
   vipType?: string;
-  /** 启动时是否自动签到领 VIP */
-  autoCheckinVip: boolean;
-  /** 上次签到日期 (YYYY-MM-DD) */
+  /** 上次手动打卡日期 (YYYY-MM-DD) */
   lastCheckinDate?: string;
   /** 自定义备用音源 API 地址 */
   customFallbackApi: string;
