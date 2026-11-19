@@ -56,10 +56,12 @@ const AppContent: React.FC = () => {
     };
   }, []);
 
-  // Android 物理返回键：有弹层就关最内层，没有就不接管，让原生决定是否退出
+  // Android 物理返回键：有弹层就关最内层，没有就不接管，让原生决定是否退出。
+  // 原生侧在派发事件后读取 window.__kugouBackHandled 判断是否需要吞掉这次返回键。
   useEffect(() => {
     const onBack = () => {
-      closeTopOverlay();
+      const closed = closeTopOverlay();
+      (window as Window & { __kugouBackHandled?: boolean }).__kugouBackHandled = closed;
     };
     document.addEventListener('app-back', onBack);
     return () => document.removeEventListener('app-back', onBack);

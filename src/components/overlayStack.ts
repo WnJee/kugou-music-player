@@ -6,10 +6,8 @@
  * 交给原生决定是否退出应用。
  *
  * 同时对外提供「有弹层打开」的信号，供全局快捷键判断是否该让路：
- *   - document.body.dataset.modal === '1'
+ *   - document.body.dataset.modal === '1'（PlayerContext 的全局 keydown 已接入）
  *   - isAnyOverlayOpen()
- * PlayerContext 的全局 keydown 尚未接入，接入时读上面任一信号即可，
- * 弹层打开期间不响应空格播放与方向键快进，避免在对话框里误触。
  */
 
 import { useEffect, useRef } from 'react';
