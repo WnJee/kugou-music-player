@@ -5,16 +5,18 @@
 
 import { Store } from '@tauri-apps/plugin-store';
 import type { KuGouPlaylist, KuGouSong } from '../types/music';
-import { md5 } from '../utils/md5';
 import { toSecureImageUrl } from '../utils/url';
 import { httpGet, httpPost, KUGOU_GATEWAY_UA, request } from './http';
 import { getDeviceMid } from './device';
-
-// 酷狗移动端网关请求签名秘钥 (从 KuGou Android 逆向获取的验签 Salt)
-const KUGOU_API_SALT = 'OIlwieks28dk2k092lksi2UIkp';
-
-// 酷狗概念版 (lite) 网关签名盐，必须与 appid 3116 配对使用
-const KUGOU_CONCEPT_SALT = 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA';
+import {
+  gatewayClientverFor,
+  otherPlatform,
+  PLATFORM_STANDARD,
+  platformOfAppId,
+  signWithSalt,
+  type GatewayParams,
+  type GatewayPlatform,
+} from './kugouConst';
 
 // 本地存储文件名
 const STORE_FILENAME = 'kugou_playlists.json';
@@ -55,21 +57,13 @@ async function getStore(): Promise<Store | null> {
 }
 
 /**
- * 酷狗网关 MD5 签名：salt + 排序后的参数串 + (可选 body) + salt。
- * 查询串签名与带 body 的 Android 网关签名共用同一算法，salt 必须与 appid 同平台配对。
+ * 酷狗网关 MD5 签名：统一的 signWithSalt 实现，salt 必须与 appid 同平台配对
  */
 function signGatewayParams(
-  params: Record<string, string | number>,
+  params: GatewayParams,
   options: { body?: unknown; salt?: string } = {}
 ): string {
-  const { body, salt = KUGOU_API_SALT } = options;
-  const paramsStr = Object.keys(params)
-    .filter((key) => key !== 'signature')
-    .sort()
-    .map((key) => `${key}=${params[key]}`)
-    .join('');
-  const bodyStr = body === undefined ? '' : typeof body === 'string' ? body : JSON.stringify(body);
-  return md5(`${salt}${paramsStr}${bodyStr}${salt}`);
+  return signWithSalt(options.salt ?? PLATFORM_STANDARD.signatureSalt, params, options.body);
 }
 
 /**
@@ -489,14 +483,22 @@ export async function fetchPlaylistTracks(specialId: string): Promise<{
 
     if (cdnRes && cdnRes.status === 1 && cdnRes.data?.info && cdnRes.data.info.length > 0) {
       const songs = cdnRes.data.info.map((item) => toKuGouSong(item));
+      const total = Number(cdnRes.data.total || songs.length);
 
-      return {
-        name: `酷狗歌单 #${specialId}`,
-        coverUrl: songs[0]?.coverUrl || '',
-        intro: '',
-        songs,
-        totalSongs: Number(cdnRes.data.total || songs.length),
-      };
+      // 单请求拿回来的曲目数必须与云端总数一致，否则说明被接口上限截断了：
+      // 此时不能当成完整结果返回（那就是残表），交给下面的网关分页取完
+      if (songs.length >= total) {
+        return {
+          name: `酷狗歌单 #${specialId}`,
+          coverUrl: songs[0]?.coverUrl || '',
+          intro: '',
+          songs,
+          totalSongs: total,
+        };
+      }
+      console.warn(
+        `[fetchPlaylistTracks] CDN 单请求仅返回 ${songs.length}/${total} 首，改走网关分页`
+      );
     }
   } catch (err) {
     console.warn('[fetchPlaylistTracks] MobileCDN 接口拉取失败，尝试官方网关接口:', err);
@@ -768,42 +770,6 @@ export async function saveAllPlaylistsToStorage(playlists: KuGouPlaylist[]): Pro
 }
 
 /**
- * 登录平台配置：token 与 appid / 签名盐必须同平台，否则网关按未登录拒绝。
- * 3116 = 酷狗概念版（lite），1005 = 酷狗标准版。
- * 与 src/services/audioSource.ts 的 GatewayPlatform 保持一致。
- */
-interface GatewayPlatform {
-  appid: number;
-  clientver: number;
-  signatureSalt: string;
-}
-
-const PLATFORM_STANDARD: GatewayPlatform = {
-  appid: 1005,
-  clientver: 20489,
-  signatureSalt: KUGOU_API_SALT,
-};
-
-const PLATFORM_CONCEPT: GatewayPlatform = {
-  appid: 3116,
-  clientver: 11430,
-  signatureSalt: KUGOU_CONCEPT_SALT,
-};
-
-/**
- * 按登录平台取网关参数。旧版本只存 token/userid 时 kugouAppId 为空，
- * 此时沿用标准版，保持向后兼容。
- */
-function platformOfAppId(kugouAppId?: number): GatewayPlatform {
-  return (kugouAppId || 1005) === 3116 ? PLATFORM_CONCEPT : PLATFORM_STANDARD;
-}
-
-/** 换到另一个平台重试（同 audioSource 的降级思路） */
-function otherPlatform(platform: GatewayPlatform): GatewayPlatform {
-  return platform === PLATFORM_CONCEPT ? PLATFORM_STANDARD : PLATFORM_CONCEPT;
-}
-
-/**
  * 酷狗网关带 body 的签名使用 signGatewayParams(params, { body, salt })；
  * 此处的 salt 必须与所用 appid 同平台，否则网关返回 20006 签名校验失败。
  */
@@ -841,7 +807,7 @@ function gatewayContext(
     query: {
       appid: platform.appid,
       clienttime,
-      clientver: platform.clientver,
+      clientver: gatewayClientverFor(platform),
       dfid: '-',
       mid,
       plat: 1,
@@ -988,7 +954,7 @@ export async function searchKuGouSongs(
   const cleanKeyword = keyword.trim();
   if (!cleanKeyword) return [];
 
-  const searchUrl = 'http://songsearch.kugou.com/song_search_v2';
+  const searchUrl = 'https://songsearch.kugou.com/song_search_v2';
   interface SearchResponse {
     status: number;
     data?: {

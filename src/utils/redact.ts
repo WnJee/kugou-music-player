@@ -18,6 +18,8 @@ const SENSITIVE_QUERY_KEYS = new Set([
   'authorization',
   'cookie',
   'pwd',
+  // 歌词接口的访问凭证（krcs 下载链接里带 accesskey）
+  'accesskey',
 ]);
 
 /** 单个 query 参数过滤：敏感名一律替换成 *** */
@@ -38,8 +40,11 @@ export function redactUrl(url: string): string {
   const splitAt = url.indexOf('?');
   if (splitAt < 0) return url;
 
+  // fragment 原样保留：酷狗部分链接用 # 携带状态，丢掉会让日志里的地址不可复现
+  const hashAt = url.indexOf('#', splitAt);
+  const fragment = hashAt < 0 ? '' : url.slice(hashAt);
   const base = url.slice(0, splitAt);
-  const query = url.slice(splitAt + 1).split('#')[0];
+  const query = hashAt < 0 ? url.slice(splitAt + 1) : url.slice(splitAt + 1, hashAt);
   const redactedQuery = query
     .split('&')
     .filter(Boolean)
@@ -52,13 +57,15 @@ export function redactUrl(url: string): string {
     })
     .join('&');
 
-  return `${base}?${redactedQuery}`;
+  return `${base}?${redactedQuery}${fragment}`;
 }
 
-/** 文本脱敏：把文本中所有 http(s) URL 逐个脱敏（错误信息里可能嵌了多个链接） */
+/**
+ * 文本脱敏：把文本中所有 URL 逐个脱敏（错误信息里可能嵌了多个链接）
+ * 协议相对地址（`//host?token=…`）同样有凭据，一并处理
+ */
 export function redactText(text: string): string {
-  return text.replace(/(?:https?:|blob:|data:)?\/\/[^\s'"<>）)]+/g, (match) => {
-    const hasScheme = /^(?:https?:|blob:|data:)/.test(match);
-    return hasScheme ? redactUrl(match) : match;
-  });
+  return text.replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s'"<>）)]+/gi, (match) =>
+    redactUrl(match)
+  );
 }

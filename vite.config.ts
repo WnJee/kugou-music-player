@@ -49,7 +49,7 @@ export default defineConfig(async () => ({
         },
       },
       '/proxy-search': {
-        target: 'http://songsearch.kugou.com',
+        target: 'https://songsearch.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-search/, ''),
         headers: {
@@ -62,9 +62,40 @@ export default defineConfig(async () => ({
         rewrite: (path) => path.replace(/^\/proxy-trackercdn/, ''),
       },
       '/proxy-krcs': {
-        target: 'http://krcs.kugou.com',
+        target: 'https://krcs.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-krcs/, ''),
+      },
+      // 二级网关（歌单分页）、移动端 CDN、会员权益接口：浏览器模式下缺这几条会直接 CORS 失败
+      '/proxy-gateway-retry': {
+        target: 'http://gatewayretry.kugou.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy-gateway-retry/, ''),
+        headers: {
+          Referer: 'https://www.kugou.com/',
+        },
+      },
+      '/proxy-mobilecdn': {
+        // mobilecdn 只提供 http，https 握手直接失败，代理侧必须保持 http
+        target: 'http://mobilecdn.kugou.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy-mobilecdn/, ''),
+        headers: {
+          Referer: 'https://www.kugou.com/',
+        },
+      },
+      '/proxy-vip': {
+        target: 'https://kugouvip.kugou.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy-vip/, ''),
+        headers: {
+          Referer: 'https://www.kugou.com/',
+        },
+      },
+      '/proxy-t4': {
+        target: 'https://t4.kugou.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy-t4/, ''),
       },
       '/proxy-t1': {
         target: 'https://t1.kugou.com',

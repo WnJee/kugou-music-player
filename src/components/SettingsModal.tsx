@@ -6,6 +6,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
   Check,
   CheckCircle2,
   Download,
@@ -47,6 +48,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [isCheckinLoading, setIsCheckinLoading] = useState(false);
   const [checkinProgress, setCheckinProgress] = useState<string | null>(null);
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
+  // 打卡结果可能失败：失败也必须用告警色，不能都渲染成绿色成功框
+  const [checkinOk, setCheckinOk] = useState<boolean>(true);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showManualAuth, setShowManualAuth] = useState(false);
   const [manualToken, setManualToken] = useState('');
@@ -173,12 +176,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         setCheckinProgress(msg)
       );
       setCheckinMessage(res.message);
+      setCheckinOk(res.success);
       await refreshVipStatus();
       const updated = await getUserSettings();
       setSettings(updated);
     } catch (err) {
       console.error('[SettingsModal] 手动打卡失败:', err);
       setCheckinMessage(err instanceof Error ? err.message : '打卡网络异常');
+      setCheckinOk(false);
     } finally {
       setIsCheckinLoading(false);
       setCheckinProgress(null);
@@ -539,8 +544,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
 
                 {checkinMessage && (
-                  <div className="notice mt-3" data-tone="ok">
-                    <Check size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+                  <div className="notice mt-3" data-tone={checkinOk ? 'ok' : 'bad'}>
+                    {checkinOk ? (
+                      <Check size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+                    ) : (
+                      <AlertCircle size={13} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+                    )}
                     <span>{checkinMessage}</span>
                   </div>
                 )}

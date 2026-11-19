@@ -575,11 +575,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             // 分页在重试耗尽后会直接抛错：此时保留缓存，绝不写入残缺曲目列表
             console.warn('[syncCloudPlaylists] 曲目拉取失败，保留本地缓存:', err);
             failedNames.push(cloudPlaylist.name);
-            mergedCloud.push(
-              cached
-                ? { ...cloudPlaylist, songs: cached.songs, totalSongs: cached.songs.length }
-                : cloudPlaylist
-            );
+            // 有缓存就整表沿用；连缓存都没有时宁可不展示，也不写「总数 N、实际 0 首」的残表
+            if (cached) {
+              mergedCloud.push({
+                ...cloudPlaylist,
+                songs: cached.songs,
+                totalSongs: cached.songs.length,
+              });
+            }
           }
         }
 
@@ -674,9 +677,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const reload = opts?.reload;
 
     if (!reload) {
-      // 换歌必须清掉上一首遗留的定位目标，否则新歌的 loadedmetadata 会被拖到旧位置
-      pendingSeekRef.current = null;
-      relinkRef.current = null;
+      // 冷启动恢复后点播放其实还是同一首：此时保留 pendingSeekRef / 进度快照，
+      // 否则恢复出来的进度会被这里清掉，「记住上次进度」等于没做
+      const continuing = Boolean(
+        currentSongRef.current?.hash && currentSongRef.current.hash === song.hash
+      );
+
+      if (!continuing) {
+        // 换歌必须清掉上一首遗留的定位目标，否则新歌的 loadedmetadata 会被拖到旧位置
+        pendingSeekRef.current = null;
+        relinkRef.current = null;
+      }
 
       // 维护独立播放队列：队列中不存在时按需插入
       // （搜索结果插到最前面，其余场景追加到末尾；已存在则直接播放不重复添加）
@@ -687,24 +698,29 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       setCurrentSong(song);
       currentSongRef.current = song;
-      setAudioSourceInfo(null);
-      audioSourceInfoRef.current = null;
-      playbackProgress.reset();
-      setLyrics([]);
-      lyricsRef.current = [];
-      setActiveLyricIndex(-1);
+      if (!continuing) {
+        setAudioSourceInfo(null);
+        audioSourceInfoRef.current = null;
+        playbackProgress.reset();
+        setLyrics([]);
+        lyricsRef.current = [];
+        setActiveLyricIndex(-1);
+      }
 
-      // 快速切歌时旧请求会晚到：用序号挡掉过期歌词
-      const lyricsRequestId = ++lyricsRequestIdRef.current;
-      fetchSongLyrics(song)
-        .then((lines) => {
-          if (lyricsRequestIdRef.current !== lyricsRequestId) return;
-          setLyrics(lines);
-        })
-        .catch((err) => {
-          if (lyricsRequestIdRef.current !== lyricsRequestId) return;
-          console.warn('[PlayerContext] 歌词拉取失败:', err);
-        });
+      // 同一首歌重播（冷启动续播 / single 循环）不必再拉一次歌词
+      if (!continuing) {
+        // 快速切歌时旧请求会晚到：用序号挡掉过期歌词
+        const lyricsRequestId = ++lyricsRequestIdRef.current;
+        fetchSongLyrics(song)
+          .then((lines) => {
+            if (lyricsRequestIdRef.current !== lyricsRequestId) return;
+            setLyrics(lines);
+          })
+          .catch((err) => {
+            if (lyricsRequestIdRef.current !== lyricsRequestId) return;
+            console.warn('[PlayerContext] 歌词拉取失败:', err);
+          });
+      }
     }
 
     // 先停掉并卸载旧音源，避免新歌解析失败时继续播放上一首。
@@ -995,19 +1011,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setPlayMode(next);
   }, []);
 
-  // 切音质：落盘后立刻用新档位重解析当前曲目，进度与播放状态原样接续
+  // 切音质：先落盘再重解析当前曲目（解析器是从 store 现读档位的，早于落盘重解析会拿到旧值），
+  // 进度与播放状态原样接续
   const setAudioQuality = (quality: AudioQuality) => {
     if (quality === audioQualityRef.current) return;
     audioQualityRef.current = quality;
     setAudioQualityState(quality);
-    void saveUserSettings({ audioQuality: quality }).then(setUserSettings);
 
-    const audio = audioRef.current;
-    if (currentSong && audioSourceInfo && audio) {
-      void playSong(currentSong, {
-        reload: { startAt: audio.currentTime, autoplay: isPlaying },
-      });
-    }
+    void (async () => {
+      setUserSettings(await saveUserSettings({ audioQuality: quality }));
+      const audio = audioRef.current;
+      const song = currentSongRef.current;
+      if (song && audioSourceInfoRef.current && audio) {
+        await playSong(song, {
+          reload: { startAt: audio.currentTime, autoplay: isPlayingRef.current },
+        });
+      }
+    })();
   };
 
   // 切音效：已挂上音频图就直接改增益，没挂就探测 CORS 后重建元素再挂
@@ -1214,15 +1234,20 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      // 焦点在输入类控件时不拦截按键
+      // 焦点在输入类/可交互控件时不拦截按键：否则空格会同时触发按钮 click 和播放暂停
       if (
         target &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.tagName === 'BUTTON' ||
+          target.tagName === 'A' ||
           target.isContentEditable)
       ) {
         return;
       }
+      // 长按重复事件与带修饰键的组合键（⌘/Ctrl/Alt）交给浏览器和系统
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
 
       const actions = actionsRef.current;
       // 弹层打开时只让路给媒体键，空格/方向键交给弹层自己处理（overlayStack 会打这个标记）

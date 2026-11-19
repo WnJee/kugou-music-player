@@ -35,6 +35,8 @@ const SETTINGS_KEY = 'user_settings';
  * 避免「平台重试 × 多档位降档」串行把首播拖到十几秒（H5）。
  */
 const PRIMARY_RESOLVE_BUDGET_MS = 10000;
+/** 备轨总预算：候选项最多 5 个串行，必须共享一份预算，否则最坏情况要卡一分钟 */
+const FALLBACK_RESOLVE_BUDGET_MS = 8000;
 
 const DEFAULT_SETTINGS: UserSettings = {
   kugouToken: '',
@@ -363,10 +365,6 @@ export async function checkinConceptVip(
   return second.success ? second : first;
 }
 
-/**
- * 启动时签到已移除：签到只能由用户在设置页手动触发（仍可保留此注释位置给后续扩展）
- */
-
 interface TrackerV5Response {
   status: number;
   error_code?: number;
@@ -574,6 +572,7 @@ export async function fetchFallbackAudio(
   const cleanSinger = song.singerName.trim();
   const targetDuration = song.duration;
   const requestedQuality = audioQualityOption(settings.audioQuality).id;
+  const deadline = Date.now() + FALLBACK_RESOLVE_BUDGET_MS;
 
   // 1. 若配置了自定义 Fallback 聚合 API，优先使用
   if (settings.customFallbackApi) {
@@ -642,6 +641,11 @@ export async function fetchFallbackAudio(
       });
 
       for (const candidate of candidates.slice(0, 5)) {
+        // 预算耗尽就别再串行试下一个候选了，直接交给上层走试听降级
+        if (Date.now() >= deadline) {
+          console.warn('[fetchFallbackAudio] 备轨解析超出时长预算，停止继续尝试');
+          break;
+        }
         const candidateHash = (candidate.HQFileHash || candidate.FileHash || '').toLowerCase();
         if (!candidateHash || candidateHash === song.hash.toLowerCase()) {
           continue; // 跳过原收费 Hash
@@ -659,7 +663,8 @@ export async function fetchFallbackAudio(
             mixSongId: String(candidate.MixSongID || candidate.ID || ''),
           },
           settings,
-          128
+          128,
+          deadline
         )).result;
 
         if (resolved && resolved.duration > 60) {

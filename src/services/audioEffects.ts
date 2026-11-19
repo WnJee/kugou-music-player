@@ -134,18 +134,22 @@ async function discardBody(response: Response): Promise<void> {
  * 导致音效链整首静音。这里只用简单请求（HEAD 优先，不支持 HEAD 的 CDN 再退 GET），
  * 并且无论成败都取消/丢弃响应体。
  */
+/** 探测预算：CDN 卡住时不能拖住首播，超时就当不可用（音效降级比不出声好） */
+const CORS_PROBE_TIMEOUT_MS = 1500;
+
 export async function checkAudioCors(url: string): Promise<boolean> {
   if (!url) return false;
 
+  const signal = AbortSignal.timeout(CORS_PROBE_TIMEOUT_MS);
   try {
-    const head = await window.fetch(url, { method: 'HEAD', mode: 'cors', cache: 'no-store' });
+    const head = await window.fetch(url, { method: 'HEAD', mode: 'cors', cache: 'no-store', signal });
     if (head.ok || head.status === 206) {
       await discardBody(head);
       return true;
     }
     await discardBody(head);
 
-    const get = await window.fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store' });
+    const get = await window.fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store', signal });
     const usable = get.ok || get.status === 206;
     await discardBody(get);
     return usable;

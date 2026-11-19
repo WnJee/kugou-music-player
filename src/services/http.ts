@@ -65,48 +65,30 @@ export function isTauriEnvironment(): boolean {
   return Boolean(marked.__TAURI_INTERNALS__ || marked.__TAURI__ || marked.isTauri);
 }
 
-/**
- * 在浏览器开发模式下重写酷狗请求地址至 Vite 代理，避免跨域报错
- */
+/** 浏览器开发模式下需要走 Vite 代理的酷狗域名 → 代理前缀（与协议无关） */
+const BROWSER_PROXIES: Array<[host: string, prefix: string]> = [
+  ['login-user.kugou.com', '/proxy-login'],
+  ['gateway.kugou.com', '/proxy-gateway'],
+  ['gatewayretry.kugou.com', '/proxy-gateway-retry'],
+  ['songsearch.kugou.com', '/proxy-search'],
+  // CDN 只有 http 可用（https 握手直接失败），仍走代理，由代理侧发起 http 请求
+  ['mobilecdn.kugou.com', '/proxy-mobilecdn'],
+  ['trackercdn.kugou.com', '/proxy-trackercdn'],
+  ['krcs.kugou.com', '/proxy-krcs'],
+  ['kugouvip.kugou.com', '/proxy-vip'],
+  ['t1.kugou.com', '/proxy-t1'],
+  ['t4.kugou.com', '/proxy-t4'],
+  ['m.kugou.com', '/proxy-m'],
+  ['www.kugou.com', '/proxy-www'],
+];
+
 function rewriteUrlForBrowser(url: string): string {
   if (isTauriEnvironment()) return url;
-  if (url.startsWith('https://login-user.kugou.com')) {
-    return url.replace('https://login-user.kugou.com', '/proxy-login');
-  }
-  if (url.startsWith('https://gateway.kugou.com')) {
-    return url.replace('https://gateway.kugou.com', '/proxy-gateway');
-  }
-  if (url.startsWith('http://gateway.kugou.com')) {
-    return url.replace('http://gateway.kugou.com', '/proxy-gateway');
-  }
-  if (url.startsWith('http://songsearch.kugou.com')) {
-    return url.replace('http://songsearch.kugou.com', '/proxy-search');
-  }
-  if (url.startsWith('https://songsearch.kugou.com')) {
-    return url.replace('https://songsearch.kugou.com', '/proxy-search');
-  }
-  if (url.startsWith('https://trackercdn.kugou.com')) {
-    return url.replace('https://trackercdn.kugou.com', '/proxy-trackercdn');
-  }
-  if (url.startsWith('http://trackercdn.kugou.com')) {
-    return url.replace('http://trackercdn.kugou.com', '/proxy-trackercdn');
-  }
-  if (url.startsWith('http://krcs.kugou.com')) {
-    return url.replace('http://krcs.kugou.com', '/proxy-krcs');
-  }
-  if (url.startsWith('https://krcs.kugou.com')) {
-    return url.replace('https://krcs.kugou.com', '/proxy-krcs');
-  }
-  if (url.startsWith('https://t1.kugou.com')) {
-    return url.replace('https://t1.kugou.com', '/proxy-t1');
-  }
-  if (url.startsWith('https://m.kugou.com')) {
-    return url.replace('https://m.kugou.com', '/proxy-m');
-  }
-  if (url.startsWith('https://www.kugou.com')) {
-    return url.replace('https://www.kugou.com', '/proxy-www');
-  }
-  return url;
+  const origin = /^https?:\/\/[^/?#]+/i.exec(url);
+  if (!origin) return url;
+  const host = origin[0].replace(/^https?:\/\//i, '').toLowerCase();
+  const proxy = BROWSER_PROXIES.find(([name]) => name === host);
+  return proxy ? url.replace(origin[0], proxy[1]) : url;
 }
 
 /**

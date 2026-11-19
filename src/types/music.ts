@@ -102,7 +102,7 @@ export interface UserSettings {
 /** 音质档位：标准 128 / 高音质 320 / 无损 FLAC / 高解析 Hi-Res */
 export type AudioQuality = '128' | '320' | 'flac' | 'hires';
 
-/** 音效档位：原声 / 人声 / 低音 / 摇滚 / 现场 / 夜间 */
+/** 音效档位：原声 / 丽音 / 音响 / 车载 / 现场 / 摇滚（与 AUDIO_EFFECT_PRESETS 一一对应） */
 export type AudioEffectId = 'off' | 'lily' | 'hifi' | 'car' | 'live' | 'rock';
 
 export interface AudioSourceResult {
