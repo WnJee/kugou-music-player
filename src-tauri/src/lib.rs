@@ -168,8 +168,27 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             _ => {}
         });
 
-    if let Some(icon) = app.handle().default_window_icon() {
-        tray = tray.icon(icon.clone());
+    // 图标：macOS 用模板图（纯黑 + alpha），系统按明暗自动反转，与其它菜单栏图标同风格；
+    // 其它平台的任务栏托盘是彩色的，用满幅 3 柱小图更易辨认（5 柱在 16~22px 会糊）。
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(image) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template@2x.png"))
+        {
+            tray = tray.icon(image).icon_as_template(true);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let tray_png: &[u8] = if cfg!(target_os = "windows") {
+            include_bytes!("../icons/tray-small.png")
+        } else {
+            include_bytes!("../icons/tray-small@2x.png")
+        };
+        if let Ok(image) = tauri::image::Image::from_bytes(tray_png) {
+            tray = tray.icon(image);
+        } else if let Some(icon) = app.handle().default_window_icon() {
+            tray = tray.icon(icon.clone());
+        }
     }
     tray.build(app)?;
 

@@ -14,7 +14,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # tray-icon: 桌面端托盘 / 菜单栏图标，主界面隐藏后靠它叫回来并做播放控制
-tauri = { version = "2", features = ["tray-icon"] }
+# image-png: 运行时用 Image::from_bytes 解码托盘图标（macOS 模板图 / 3 柱小图）
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # unsafe-headers：酷狗接口依赖 Cookie / Referer / Host 自带头，plugin-http 默认会把它们剔除（H2）
 tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 tauri-plugin-store = "2"

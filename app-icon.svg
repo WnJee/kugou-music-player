@@ -1,19 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- KuGouPlayer 应用图标设计源（1024 网格）：
+       象牙白竖向渐变圆角底板 + 鼠尾草绿「对称波形柱 + 八分音符」标记。
+       各平台内缩比例、小尺寸简化（2 柱 + 单音符）由 scripts/gen_icons.py 处理，
+       生成器还会把标记按外接框居中，这里按设计坐标直接摆放。 -->
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#06b6d4" />
-      <stop offset="50%" stop-color="#2563eb" />
-      <stop offset="100%" stop-color="#7c3aed" />
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FDFBF6" />
+      <stop offset="0.52" stop-color="#F6F3E9" />
+      <stop offset="1" stop-color="#E6E1D3" />
     </linearGradient>
+    <linearGradient id="sage" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#96AB94" />
+      <stop offset="1" stop-color="#6B8371" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30" />
+      <stop offset="0.62" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+    <clipPath id="body">
+      <rect width="1024" height="1024" rx="236" />
+    </clipPath>
   </defs>
-  <rect width="512" height="512" rx="128" fill="url(#bg)" />
-  <!-- Vinyl record -->
-  <circle cx="256" cy="256" r="160" fill="#09090b" opacity="0.9" />
-  <circle cx="256" cy="256" r="130" fill="none" stroke="#27272a" stroke-width="3" />
-  <circle cx="256" cy="256" r="100" fill="none" stroke="#27272a" stroke-width="2" />
-  <!-- Center disc -->
-  <circle cx="256" cy="256" r="60" fill="url(#bg)" />
-  <circle cx="256" cy="256" r="16" fill="#09090b" />
-  <!-- Music note icon -->
-  <path d="M246 220 v60 a20 20 0 1 1 -16 -19 v-45 l50 -12 v40 a20 20 0 1 1 -16 -19 v-30 z" fill="#ffffff" opacity="0.9" />
+
+  <g clip-path="url(#body)">
+    <rect width="1024" height="1024" fill="url(#paper)" />
+    <rect width="1024" height="1024" fill="url(#glow)" />
+    <g fill="url(#sage)">
+      <!-- 波形三柱：218 / 358 / 218，柱宽 94，间距 60，竖向居中 -->
+      <rect x="126" y="403" width="94" height="218" rx="47" />
+      <rect x="280" y="333" width="94" height="358" rx="47" />
+      <rect x="434" y="403" width="94" height="218" rx="47" />
+      <!-- 八分音符：倾斜符头（-22°）+ 符干 + 符尾 -->
+      <ellipse cx="690" cy="648" rx="72" ry="56" transform="rotate(-22 690 648)" />
+      <rect x="734" y="286" width="34" height="362" rx="17" />
+      <path d="M734 286 Q882.9 310.96 830.4 494 Q777.8 414.96 734 373.4 Z" />
+    </g>
+  </g>
+  <rect x="0.9" y="0.9" width="1022.2" height="1022.2" rx="235.1" fill="none"
+        stroke="#5F5A48" stroke-opacity="0.16" stroke-width="1.7" />
 </svg>
