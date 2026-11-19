@@ -28,6 +28,7 @@ import {
   saveAllPlaylistsToStorage,
   fetchUserCloudPlaylists,
   fetchUserCloudPlaylistTracks,
+  fetchUserCloudPlaylistTracksFull,
   addSongToUserCloudPlaylist,
   removeSongFromUserCloudPlaylist,
 } from '../services/kugouPlaylist';
@@ -68,13 +69,6 @@ interface PlayerContextType {
   // 播放状态
   currentSong: KuGouSong | null;
   isPlaying: boolean;
-  /**
-   * @deprecated 高频进度已迁到 `usePlaybackProgress()`。这里是渲染时的快照，
-   * 不随播放推进刷新；新代码请改用 `usePlaybackProgress()`。
-   */
-  currentTime: number;
-  /** @deprecated 见 currentTime，请改用 `usePlaybackProgress().duration` */
-  duration: number;
   volume: number;
   isMuted: boolean;
   playMode: PlayMode;
@@ -566,13 +560,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             continue;
           }
           try {
-            const tracks = await fetchUserCloudPlaylistTracks(
+            const tracksResult = await fetchUserCloudPlaylistTracksFull(
               listId,
               settings.kugouToken,
               settings.kugouUserId,
               settings.kugouAppId
             );
-            mergedCloud.push({ ...cloudPlaylist, songs: tracks, totalSongs: tracks.length });
+            mergedCloud.push({
+              ...cloudPlaylist,
+              songs: tracksResult.songs,
+              totalSongs: tracksResult.totalSongs,
+            });
           } catch (err) {
             // 分页在重试耗尽后会直接抛错：此时保留缓存，绝不写入残缺曲目列表
             console.warn('[syncCloudPlaylists] 曲目拉取失败，保留本地缓存:', err);
@@ -1227,6 +1225,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       const actions = actionsRef.current;
+      // 弹层打开时只让路给媒体键，空格/方向键交给弹层自己处理（overlayStack 会打这个标记）
+      const overlayOpen = document.body.dataset.modal === '1';
 
       // 标准媒体键：不受「是否有当前歌曲」限制，切歌/清空队列后仍可响应
       switch (e.key) {
@@ -1256,7 +1256,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           return;
       }
 
-      if (!currentSongRef.current) return;
+      if (!currentSongRef.current || overlayOpen) return;
 
       switch (e.key) {
         case ' ':
@@ -1339,15 +1339,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const target = currentTime + delta;
       seek(delta < 0 ? Math.max(0, target) : duration > 0 ? Math.min(duration, target) : target);
     },
+    // 调大音量时顺带解静音，否则静音状态下按 ↑ 毫无反应
     nudgeVolume: (delta: number) => {
+      if (delta > 0 && isMutedRef.current) toggleMute();
       setVolume((isMutedRef.current ? 0 : volumeRef.current) + delta);
     },
   };
 
-  // 主 Context 不再持有高频进度：这里的 currentTime / duration 只是渲染时快照，
-  // 订阅进度请使用 usePlaybackProgress()（嵌套 Provider 由 PlaybackProgress 提供）
-  const progressSnapshot = playbackProgress.getSnapshot();
-
+  // 高频进度不进主 Context：订阅请用 usePlaybackProgress()（嵌套 Provider 提供）
   return (
     <PlaybackProgressProvider seek={seek}>
       <PlayerContext.Provider
@@ -1370,8 +1369,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
           currentSong,
           isPlaying,
-          currentTime: progressSnapshot.currentTime,
-          duration: progressSnapshot.duration,
           volume,
           isMuted,
           playMode,
