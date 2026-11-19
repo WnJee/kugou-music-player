@@ -50,6 +50,8 @@ export const PLATFORM_CONCEPT: GatewayPlatform = {
 
 export const PLATFORM_STANDARD: GatewayPlatform = {
   appid: 1005,
+  // 注意：11430 是 trackercdn 实测值，网关类接口必须走 gatewayClientverFor()（标准版 20489），
+  // 直接用这个字面量拼网关参数会返回 20006/20017
   clientver: 11430,
   signatureSalt: STANDARD_SIGNATURE_SALT,
   trackerKeySalt: STANDARD_TRACKER_SALT,
@@ -85,7 +87,12 @@ export function signWithSalt(salt: string, params: GatewayParams, bodyObj?: unkn
     .sort()
     .map((key) => `${key}=${params[key]}`)
     .join('');
-  const bodyStr = bodyObj ? (typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj)) : '';
+  const bodyStr =
+    bodyObj === undefined || bodyObj === null
+      ? ''
+      : typeof bodyObj === 'string'
+        ? bodyObj
+        : JSON.stringify(bodyObj);
   return md5(`${salt}${sorted}${bodyStr}${salt}`);
 }
 

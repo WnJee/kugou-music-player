@@ -222,6 +222,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const currentSongRef = useRef<KuGouSong | null>(null);
   const isPlayingRef = useRef<boolean>(false);
   const audioSourceInfoRef = useRef<AudioSourceResult | null>(null);
+  /** 切音质的递增序号：连续快速切档时只让最后一次重解析落地 */
+  const qualitySeqRef = useRef(0);
   const playlistsRef = useRef<KuGouPlaylist[]>([]);
   const lyricsRef = useRef<LyricLine[]>([]);
   // 地址失效只重解析一次：重解析出来的新地址再报错就直接认定坏音源（成功出声后复位）
@@ -555,6 +557,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const importedOnly = localList.filter((p) => !p.isUserOwned);
         const mergedCloud: KuGouPlaylist[] = [];
         const failedNames: string[] = [];
+        const skippedNames: string[] = [];
 
         for (const cloudPlaylist of cloudLists) {
           const cached = localList.find((p) => p.id === cloudPlaylist.id);
@@ -589,6 +592,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 songs: cached.songs,
                 totalSongs: cached.songs.length,
               });
+            } else {
+              skippedNames.push(cloudPlaylist.name);
             }
           }
         }
@@ -599,11 +604,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         setActivePlaylist((prev) => {
           if (!prev) return all.length > 0 ? all[0] : null;
-          return all.find((p) => p.id === prev.id) ?? prev;
+          // 当前歌单本轮没进 all（无缓存被跳过 / 云端已删），不能继续指向一个已不存在的对象
+          return all.find((p) => p.id === prev.id) ?? (all.length > 0 ? all[0] : null);
         });
 
-        if (failedNames.length > 0) {
-          setCloudSyncError(`${failedNames.join('、')} 曲目同步失败，已保留本地缓存`);
+        if (failedNames.length > 0 || skippedNames.length > 0) {
+          const parts: string[] = [];
+          if (failedNames.length > 0) {
+            parts.push(`${failedNames.join('、')} 曲目同步失败，已保留本地缓存`);
+          }
+          if (skippedNames.length > 0) {
+            parts.push(`${skippedNames.join('、')} 暂无本地缓存，本轮跳过`);
+          }
+          setCloudSyncError(parts.join('；'));
         }
       }
     } catch (err) {
@@ -1025,8 +1038,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     audioQualityRef.current = quality;
     setAudioQualityState(quality);
 
+    const seq = ++qualitySeqRef.current;
     void (async () => {
-      setUserSettings(await saveUserSettings({ audioQuality: quality }));
+      const saved = await saveUserSettings({ audioQuality: quality });
+      if (seq !== qualitySeqRef.current) return;
+      setUserSettings(saved);
       const audio = audioRef.current;
       const song = currentSongRef.current;
       if (song && audioSourceInfoRef.current && audio) {
@@ -1034,7 +1050,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           reload: { startAt: audio.currentTime, autoplay: isPlayingRef.current },
         });
       }
-    })();
+    })().catch((err) => {
+      console.warn('[PlayerContext] 切换音质失败:', err);
+    });
   };
 
   // 切音效：已挂上音频图就直接改增益，没挂就探测 CORS 后重建元素再挂

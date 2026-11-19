@@ -572,7 +572,6 @@ export async function fetchFallbackAudio(
   const cleanSinger = song.singerName.trim();
   const targetDuration = song.duration;
   const requestedQuality = audioQualityOption(settings.audioQuality).id;
-  const deadline = Date.now() + FALLBACK_RESOLVE_BUDGET_MS;
 
   // 1. 若配置了自定义 Fallback 聚合 API，优先使用
   if (settings.customFallbackApi) {
@@ -640,6 +639,8 @@ export async function fetchFallbackAudio(
         return Math.abs(itemDuration - targetDuration) <= 3;
       });
 
+      // 预算只覆盖备轨重解析，从候选拿到手才开始计时，否则搜索一慢就一个候选都试不上
+      const deadline = Date.now() + FALLBACK_RESOLVE_BUDGET_MS;
       for (const candidate of candidates.slice(0, 5)) {
         // 预算耗尽就别再串行试下一个候选了，直接交给上层走试听降级
         if (Date.now() >= deadline) {

@@ -38,7 +38,8 @@ export async function readStoreValue<T>(file: string, key: string, fallback: T):
   const store = await loadStore(file);
   if (store) {
     const value = await store.get<T>(key);
-    return value ?? fallback;
+    // 只把 null/undefined 当缺失：`??` 会把已存的 0/false 当成没存，通用工具不能这么干
+    return value === null || value === undefined ? fallback : value;
   }
 
   if (typeof localStorage === 'undefined') return fallback;

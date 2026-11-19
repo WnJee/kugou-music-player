@@ -30,7 +30,7 @@ export default defineConfig(async () => ({
       ignored: ['**/src-tauri/**', '**/*.tmpdir/**', '**/*.tmp'],
     },
     proxy: {
-      '/proxy-login': {
+      '^/proxy-login': {
         target: 'https://login-user.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-login/, ''),
@@ -39,7 +39,17 @@ export default defineConfig(async () => ({
           Origin: 'https://www.kugou.com',
         },
       },
-      '/proxy-gateway': {
+      // Vite 按声明顺序做 startsWith 匹配，/proxy-gateway-retry 必须排在 /proxy-gateway 之前
+      // 二级网关（歌单分页/短链解析）
+      '^/proxy-gateway-retry': {
+        target: 'http://gatewayretry.kugou.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy-gateway-retry/, ''),
+        headers: {
+          Referer: 'https://www.kugou.com/',
+        },
+      },
+      '^/proxy-gateway': {
         target: 'https://gateway.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-gateway/, ''),
@@ -48,7 +58,7 @@ export default defineConfig(async () => ({
           Origin: 'https://www.kugou.com',
         },
       },
-      '/proxy-search': {
+      '^/proxy-search': {
         target: 'https://songsearch.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-search/, ''),
@@ -56,26 +66,18 @@ export default defineConfig(async () => ({
           Referer: 'https://www.kugou.com/',
         },
       },
-      '/proxy-trackercdn': {
+      '^/proxy-trackercdn': {
         target: 'https://trackercdn.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-trackercdn/, ''),
       },
-      '/proxy-krcs': {
+      '^/proxy-krcs': {
         target: 'https://krcs.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-krcs/, ''),
       },
       // 二级网关（歌单分页）、移动端 CDN、会员权益接口：浏览器模式下缺这几条会直接 CORS 失败
-      '/proxy-gateway-retry': {
-        target: 'http://gatewayretry.kugou.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/proxy-gateway-retry/, ''),
-        headers: {
-          Referer: 'https://www.kugou.com/',
-        },
-      },
-      '/proxy-mobilecdn': {
+      '^/proxy-mobilecdn': {
         // mobilecdn 只提供 http，https 握手直接失败，代理侧必须保持 http
         target: 'http://mobilecdn.kugou.com',
         changeOrigin: true,
@@ -84,7 +86,7 @@ export default defineConfig(async () => ({
           Referer: 'https://www.kugou.com/',
         },
       },
-      '/proxy-vip': {
+      '^/proxy-vip': {
         target: 'https://kugouvip.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-vip/, ''),
@@ -92,22 +94,22 @@ export default defineConfig(async () => ({
           Referer: 'https://www.kugou.com/',
         },
       },
-      '/proxy-t4': {
+      '^/proxy-t4(/|$)': {
         target: 'https://t4.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-t4/, ''),
       },
-      '/proxy-t1': {
+      '^/proxy-t1(/|$)': {
         target: 'https://t1.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-t1/, ''),
       },
-      '/proxy-m': {
+      '^/proxy-m(/|$)': {
         target: 'https://m.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-m/, ''),
       },
-      '/proxy-www': {
+      '^/proxy-www(/|$)': {
         target: 'https://www.kugou.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-www/, ''),

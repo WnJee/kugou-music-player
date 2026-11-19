@@ -135,21 +135,40 @@ async function discardBody(response: Response): Promise<void> {
  * 并且无论成败都取消/丢弃响应体。
  */
 /** 探测预算：CDN 卡住时不能拖住首播，超时就当不可用（音效降级比不出声好） */
-const CORS_PROBE_TIMEOUT_MS = 1500;
+const CORS_PROBE_TIMEOUT_MS = 1200;
+
+/**
+ * 单次探测请求各用独立超时。不要用 AbortSignal.timeout：
+ * 老 Android WebView（< Chrome 103）没有这个静态方法，会在 try 外抛 TypeError，
+ * 让「不可用」误传成「抛错」，最终把整首歌误判成坏源。
+ */
+async function fetchProbe(url: string, method: 'HEAD' | 'GET'): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CORS_PROBE_TIMEOUT_MS);
+  try {
+    return await window.fetch(url, {
+      method,
+      mode: 'cors',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function checkAudioCors(url: string): Promise<boolean> {
   if (!url) return false;
 
-  const signal = AbortSignal.timeout(CORS_PROBE_TIMEOUT_MS);
   try {
-    const head = await window.fetch(url, { method: 'HEAD', mode: 'cors', cache: 'no-store', signal });
+    const head = await fetchProbe(url, 'HEAD');
     if (head.ok || head.status === 206) {
       await discardBody(head);
       return true;
     }
     await discardBody(head);
 
-    const get = await window.fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store', signal });
+    const get = await fetchProbe(url, 'GET');
     const usable = get.ok || get.status === 206;
     await discardBody(get);
     return usable;

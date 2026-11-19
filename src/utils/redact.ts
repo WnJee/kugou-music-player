@@ -32,20 +32,9 @@ export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_QUERY_KEYS.has(key.toLowerCase());
 }
 
-/**
- * URL 脱敏：保留 scheme/host/path，query 中的敏感值替换成 `***`
- * 非法的 URL 串按 query 结构做字符串级处理，不会抛错。
- */
-export function redactUrl(url: string): string {
-  const splitAt = url.indexOf('?');
-  if (splitAt < 0) return url;
-
-  // fragment 原样保留：酷狗部分链接用 # 携带状态，丢掉会让日志里的地址不可复现
-  const hashAt = url.indexOf('#', splitAt);
-  const fragment = hashAt < 0 ? '' : url.slice(hashAt);
-  const base = url.slice(0, splitAt);
-  const query = hashAt < 0 ? url.slice(splitAt + 1) : url.slice(splitAt + 1, hashAt);
-  const redactedQuery = query
+/** query 里敏感值替换成 `***`，其余保留原样 */
+function redactPairs(query: string): string {
+  return query
     .split('&')
     .filter(Boolean)
     .map((pair) => {
@@ -56,8 +45,36 @@ export function redactUrl(url: string): string {
       return `${key}=${redactParam(key, value)}`;
     })
     .join('&');
+}
 
-  return `${base}?${redactedQuery}${fragment}`;
+/**
+ * fragment 里同样可能带凭据（`#access_token=…`），带 `=` 就按 query 脱敏，
+ * 纯锚点（`#/playlist`）原样保留
+ */
+function redactFragment(fragment: string): string {
+  const body = fragment.slice(1);
+  if (!body) return fragment;
+  const q = body.indexOf('?');
+  if (q >= 0) return `#${body.slice(0, q + 1)}${redactPairs(body.slice(q + 1))}`;
+  if (!body.includes('=')) return fragment;
+  return `#${redactPairs(body)}`;
+}
+
+/**
+ * URL 脱敏：保留 scheme/host/path，query 中的敏感值替换成 `***`
+ * 非法的 URL 串按 query 结构做字符串级处理，不会抛错。
+ */
+export function redactUrl(url: string): string {
+  const splitAt = url.indexOf('?');
+  if (splitAt < 0) return url;
+
+  // fragment 里的状态参数一并脱敏，否则 #access_token=… 会原样落进日志
+  const hashAt = url.indexOf('#', splitAt);
+  const fragment = hashAt < 0 ? '' : url.slice(hashAt);
+  const base = url.slice(0, splitAt);
+  const query = hashAt < 0 ? url.slice(splitAt + 1) : url.slice(splitAt + 1, hashAt);
+
+  return `${base}?${redactPairs(query)}${redactFragment(fragment)}`;
 }
 
 /**
@@ -65,7 +82,7 @@ export function redactUrl(url: string): string {
  * 协议相对地址（`//host?token=…`）同样有凭据，一并处理
  */
 export function redactText(text: string): string {
-  return text.replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s'"<>）)]+/gi, (match) =>
+  return text.replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s'"<>）)\/][^\s'"<>）)]*/gi, (match) =>
     redactUrl(match)
   );
 }
