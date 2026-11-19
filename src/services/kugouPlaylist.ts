@@ -67,13 +67,6 @@ function signGatewayParams(
 }
 
 /**
- * 查询串签名（无 body，标准版盐）
- */
-export function signKuGouGatewayParams(params: Record<string, string | number>): string {
-  return signGatewayParams(params);
-}
-
-/**
  * 安全解析 URL：解析失败返回 null，不向调用方抛原生 TypeError
  */
 function safeParseUrl(rawUrl: string): URL | null {
