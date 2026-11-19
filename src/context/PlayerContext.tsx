@@ -2,7 +2,7 @@
  * 全局播放器状态管理上下文 (src/context/PlayerContext.tsx)
  */
 
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type {
   AudioEffectId,
   AudioQuality,
@@ -18,7 +18,6 @@ import {
   getUserSettings,
   resolveAudioSource,
   saveUserSettings,
-  tryAutoCheckin,
   keepTokenAlive,
 } from '../services/audioSource';
 import { AudioEffectChain, audioEffectPreset, checkAudioCors } from '../services/audioEffects';
@@ -34,6 +33,11 @@ import {
 } from '../services/kugouPlaylist';
 import { fetchSongLyrics } from '../services/lyrics';
 import { Store } from '@tauri-apps/plugin-store';
+import { PlaybackProgressProvider, playbackProgress } from './PlaybackProgress';
+
+// 高频进度走独立 hook，对外契约：{ currentTime, duration, seek }
+export { usePlaybackProgress } from './PlaybackProgress';
+export type { PlaybackProgressValue } from './PlaybackProgress';
 
 interface PlayerContextType {
   // 用户设置与登录态
@@ -64,7 +68,12 @@ interface PlayerContextType {
   // 播放状态
   currentSong: KuGouSong | null;
   isPlaying: boolean;
+  /**
+   * @deprecated 高频进度已迁到 `usePlaybackProgress()`。这里是渲染时的快照，
+   * 不随播放推进刷新；新代码请改用 `usePlaybackProgress()`。
+   */
   currentTime: number;
+  /** @deprecated 见 currentTime，请改用 `usePlaybackProgress().duration` */
   duration: number;
   volume: number;
   isMuted: boolean;
@@ -103,8 +112,62 @@ interface PlayerContextType {
 
 const PlayerContext = createContext<PlayerContextType | null>(null);
 
+const PLAYBACK_STORE_FILE = 'kugou_playback.json';
+
+/** 播放进度落盘间隔：桌面关窗只是隐藏、托盘退出直接 app.exit、安卓被杀，都拿不到 beforeunload */
+const PROGRESS_SAVE_INTERVAL_MS = 5000;
+
+/** 整队列都播不了时不能无限轮转，连续失败攒够上限就停在这里 */
+const AUTO_SKIP_LIMIT = 5;
+
+interface PersistedPlayback {
+  volume?: number;
+  /** 是否静音（静音是用户主动选择，必须和音量一起记住） */
+  muted?: boolean;
+  playMode?: PlayMode;
+  playlistId?: string | null;
+  song?: KuGouSong | null;
+  position?: number;
+  /** 独立播放队列（重启后恢复） */
+  queue?: KuGouSong[] | null;
+}
+
+interface PlaySongOptions {
+  insertFront?: boolean;
+  reload?: { startAt: number; autoplay: boolean };
+}
+
+/** 键盘 / MediaSession / 媒体元素回调统一从这张动作表取最新实现，监听只绑一次 */
+interface PlayerActions {
+  play: () => void;
+  pause: () => void;
+  togglePlay: () => void;
+  next: () => void;
+  prev: () => void;
+  /** 相对当前位置快进 / 快退（秒） */
+  seekBy: (delta: number) => void;
+  /** 相对当前音量加减 */
+  nudgeVolume: (delta: number) => void;
+}
+
 function sameSong(a: KuGouSong | null | undefined, b: KuGouSong | null | undefined): boolean {
   return Boolean(a && b && a.hash && a.hash === b.hash);
+}
+
+/**
+ * play() 被 pause() / 换源顶掉时以 AbortError 拒绝，自动播放被系统拦截时是 NotAllowedError：
+ * 这两种与音源好坏无关，不能算作「坏音源」
+ */
+function isInterruptionError(err: unknown): boolean {
+  const name = (err as { name?: string } | null | undefined)?.name;
+  return name === 'AbortError' || name === 'NotAllowedError';
+}
+
+/** 在「除当前曲之外」的曲目里等概率挑一首：撞到自己就 +1 会让后一首概率翻倍 */
+function pickRandomOtherIndex(total: number, currentIndex: number): number {
+  if (total <= 1) return 0;
+  const rand = Math.floor(Math.random() * (total - 1));
+  return currentIndex >= 0 && rand >= currentIndex ? rand + 1 : rand;
 }
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -119,8 +182,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const [currentSong, setCurrentSong] = useState<KuGouSong | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [currentTime, setCurrentTime] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(0);
   const [volume, setVolumeState] = useState<number>(0.8);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [playMode, setPlayMode] = useState<PlayMode>('sequence');
@@ -133,15 +194,26 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [activeLyricIndex, setActiveLyricIndex] = useState<number>(-1);
+  // 恢复完成门闩：恢复结束前一律不落盘，否则会把「还没读出来」的空状态覆盖存档
+  const [isRestored, setIsRestored] = useState<boolean>(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playRequestIdRef = useRef(0);
-  // 恢复上次播放进度时暂存的目标位置，待音频元数据加载完成后定位
+  // 歌词请求序号：快速切歌时挡掉晚到的旧歌词
+  const lyricsRequestIdRef = useRef(0);
+  // 恢复 / 拖进度时暂存的目标位置，待音频元数据加载完成后定位
   const pendingSeekRef = useRef<number | null>(null);
-  // 音源异常后自动跳过的触发口：改由下面的 effect 绑定，避免与 nextSong 的声明顺序互相牵扯
+  // 音源异常后自动跳过的触发口
   const skipBrokenRef = useRef<(reason: unknown) => void>(() => {});
-  // 媒体元素的事件监听只在建元素时绑一次，用 ref 读最新值
+  // 地址疑似失效时「原地重解析当前曲目」的触发口
+  const recoverAudioRef = useRef<(reason: unknown) => void>(() => {});
+  // 成功出声后的回调：清失败记录、放行下一次重解析
+  const onPlayableRef = useRef<() => void>(() => {});
+  // 媒体元素的 ended 事件走这里，避免与 nextSong 的声明顺序互相牵扯
   const nextSongRef = useRef<() => void>(() => {});
+  const playSongRef = useRef<(song: KuGouSong, opts?: PlaySongOptions) => Promise<void>>(
+    async () => {}
+  );
   const playModeRef = useRef<PlayMode>('sequence');
   const volumeRef = useRef<number>(0.8);
   const isMutedRef = useRef<boolean>(false);
@@ -150,12 +222,48 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // 解析音源、挂音效这些异步流程里要读最新档位，不能等下一次渲染
   const audioQualityRef = useRef<AudioQuality>(DEFAULT_AUDIO_QUALITY);
   const audioEffectRef = useRef<AudioEffectId>('off');
+  // 媒体事件 / 键盘 / MediaSession 回调里要读最新播放状态，用 ref 镜像避免闭包过期
+  const currentSongRef = useRef<KuGouSong | null>(null);
+  const isPlayingRef = useRef<boolean>(false);
+  const audioSourceInfoRef = useRef<AudioSourceResult | null>(null);
+  const playlistsRef = useRef<KuGouPlaylist[]>([]);
+  const lyricsRef = useRef<LyricLine[]>([]);
+  // 地址失效只重解析一次：重解析出来的新地址再报错就直接认定坏音源（成功出声后复位）
+  const relinkRef = useRef<{ hash: string; used: boolean } | null>(null);
+  // 本模块在媒体元素上绑的监听按元素隔离，换元素时整体 abort
+  const elementAbortRef = useRef(new WeakMap<HTMLAudioElement, AbortController>());
+  // 上一轮连续失败的歌：同一首会同时抛 media error 和 play() 拒绝，只处理第一次
+  const autoSkipRef = useRef<Set<string>>(new Set());
+  const actionsRef = useRef<PlayerActions>({
+    play: () => {},
+    pause: () => {},
+    togglePlay: () => {},
+    next: () => {},
+    prev: () => {},
+    seekBy: () => {},
+    nudgeVolume: () => {},
+  });
 
+  currentSongRef.current = currentSong;
+  isPlayingRef.current = isPlaying;
+  audioSourceInfoRef.current = audioSourceInfo;
+  playlistsRef.current = playlists;
+  lyricsRef.current = lyrics;
   audioQualityRef.current = audioQuality;
   audioEffectRef.current = audioEffect;
   volumeRef.current = volume;
   isMutedRef.current = isMuted;
   playModeRef.current = playMode;
+
+  /** 释放媒体元素：解绑本模块绑的监听，并断开底层解码资源 */
+  const disposeMediaElement = useCallback((element: HTMLAudioElement | null) => {
+    if (!element) return;
+    elementAbortRef.current.get(element)?.abort();
+    elementAbortRef.current.delete(element);
+    element.pause();
+    element.removeAttribute('src');
+    element.load();
+  }, []);
 
   /**
    * 媒体元素工厂
@@ -166,41 +274,78 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const audio = new Audio();
     audio.volume = isMutedRef.current ? 0 : volumeRef.current;
 
-    audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime));
-    audio.addEventListener('durationchange', () => {
-      if (audio.duration && !isNaN(audio.duration)) setDuration(audio.duration);
-    });
-    audio.addEventListener('play', () => setIsPlaying(true));
-    audio.addEventListener('pause', () => setIsPlaying(false));
-    audio.addEventListener('waiting', () => setIsLoadingAudio(true));
-    audio.addEventListener('playing', () => setIsLoadingAudio(false));
+    // 用 AbortController 统一解绑本元素上的全部监听
+    const controller = new AbortController();
+    elementAbortRef.current.set(audio, controller);
+    const listenerOptions = { signal: controller.signal };
+
+    // 进度只写进独立的 progress store，主 Provider 不随每帧重渲染
+    audio.addEventListener(
+      'timeupdate',
+      () => playbackProgress.update({ currentTime: audio.currentTime }),
+      listenerOptions
+    );
+    audio.addEventListener(
+      'durationchange',
+      () => {
+        if (audio.duration && isFinite(audio.duration)) {
+          playbackProgress.update({ duration: audio.duration });
+        }
+      },
+      listenerOptions
+    );
+    audio.addEventListener('play', () => setIsPlaying(true), listenerOptions);
+    audio.addEventListener('pause', () => setIsPlaying(false), listenerOptions);
+    audio.addEventListener('waiting', () => setIsLoadingAudio(true), listenerOptions);
+    audio.addEventListener(
+      'playing',
+      () => {
+        setIsLoadingAudio(false);
+        onPlayableRef.current();
+      },
+      listenerOptions
+    );
     // 地址解析成功但流本身不可用（404 / 换源 / 解码失败）时 media 元素只抛 error，不会自己往下走
-    audio.addEventListener('error', () => {
-      if (!audio.src) return;
-      const code = audio.error?.code;
-      setErrorMsg(audio.error?.message || `音源错误${code ? ` (${code})` : ''}`);
-      setIsPlaying(false);
-      setIsLoadingAudio(false);
-      skipBrokenRef.current(audio.error ?? 'media error');
-    });
+    audio.addEventListener(
+      'error',
+      () => {
+        if (!audio.src) return;
+        const code = audio.error?.code;
+        setErrorMsg(audio.error?.message || `音源错误${code ? ` (${code})` : ''}`);
+        setIsPlaying(false);
+        setIsLoadingAudio(false);
+        // 链接过期 / 源站换链都走这里：先原地重解析一次，仍失败才判定坏音源
+        recoverAudioRef.current(audio.error ?? 'media error');
+      },
+      listenerOptions
+    );
     // 恢复上次播放进度：待元数据加载完成后定位
-    audio.addEventListener('loadedmetadata', () => {
-      if (pendingSeekRef.current == null) return;
-      const target = pendingSeekRef.current;
-      pendingSeekRef.current = null;
-      if (isFinite(audio.duration) && target < audio.duration) {
-        audio.currentTime = target;
-        setCurrentTime(target);
-      }
-    });
-    audio.addEventListener('ended', () => {
-      if (playModeRef.current === 'single') {
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-      } else {
+    audio.addEventListener(
+      'loadedmetadata',
+      () => {
+        if (pendingSeekRef.current == null) return;
+        const target = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+        if (isFinite(audio.duration) && target < audio.duration) {
+          audio.currentTime = target;
+          playbackProgress.update({ currentTime: target });
+        }
+      },
+      listenerOptions
+    );
+    audio.addEventListener(
+      'ended',
+      () => {
+        if (playModeRef.current === 'single') {
+          audio.currentTime = 0;
+          void audio.play().catch(() => {});
+          return;
+        }
+        // 顺序模式播到队尾时 nextSong 自己会停下，不会回绕
         nextSongRef.current();
-      }
-    });
+      },
+      listenerOptions
+    );
 
     return audio;
   }, []);
@@ -210,12 +355,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const audio = createMediaElement();
     audioRef.current = audio;
     return () => {
-      audio.pause();
-      audio.removeAttribute('src');
+      // 换过元素后 audioRef 才指向当前在用的那个，清理必须走它而不是首次创建的元素
+      disposeMediaElement(audioRef.current);
+      audioRef.current = null;
       effectChainRef.current?.dispose();
       effectChainRef.current = null;
     };
-  }, [createMediaElement]);
+  }, [createMediaElement, disposeMediaElement]);
 
   /** 用全新的媒体元素顶替当前元素，保留曲目与进度（MediaElementSource 无法解绑时的唯一出路） */
   const swapMediaElement = useCallback(
@@ -232,34 +378,24 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       effectChainRef.current?.dispose();
       effectChainRef.current = null;
 
-      prev?.pause();
-      prev?.removeAttribute('src');
+      // 旧元素必须彻底释放：只 pause + 清 src 会让它继续派发事件、占着解码资源
+      disposeMediaElement(prev);
 
       if (src) {
         if (at > 0) pendingSeekRef.current = at;
         next.src = src;
-        if (wasPlaying) next.play().catch(() => {});
+        if (wasPlaying) void next.play().catch(() => {});
       }
       return next;
     },
-    [createMediaElement]
+    [createMediaElement, disposeMediaElement]
   );
 
   // ===== 记忆播放状态：音量 / 播放模式 / 上次播放的歌单、歌曲与进度 =====
-  const PLAYBACK_STORE_FILE = 'kugou_playback.json';
-
-  interface PersistedPlayback {
-    volume?: number;
-    playMode?: PlayMode;
-    playlistId?: string | null;
-    song?: KuGouSong | null;
-    position?: number;
-    /** 独立播放队列（重启后恢复） */
-    queue?: KuGouSong[] | null;
-  }
-
-  const savePlaybackPrefs = useCallback(
-    async (patch: PersistedPlayback) => {
+  // 写入串行化：savePlaybackPrefs 是「读 - 改 - 写」，并发执行会互相覆盖补丁
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const savePlaybackPrefs = useCallback((patch: PersistedPlayback): Promise<void> => {
+    const run = async () => {
       try {
         if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
         const store = await Store.load(PLAYBACK_STORE_FILE);
@@ -269,9 +405,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } catch (e) {
         console.warn('[PlaybackStore] 保存播放状态失败:', e);
       }
-    },
-    []
-  );
+    };
+    saveChainRef.current = saveChainRef.current.then(run);
+    return saveChainRef.current;
+  }, []);
 
   // 启动时恢复上次播放状态（不自动播放，仅定位到上次进度）
   const restorePlayback = useCallback(async () => {
@@ -281,16 +418,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const saved = await store.get<PersistedPlayback>('last');
       if (!saved) return;
 
-      if (typeof saved.volume === 'number' && saved.volume > 0) {
+      // 音量 0 也是合法存档（用户主动拉到 0），不能当成「没有记录」
+      if (typeof saved.volume === 'number') {
         setVolumeState(saved.volume);
-        if (audioRef.current) audioRef.current.volume = saved.volume;
+        if (audioRef.current) audioRef.current.volume = saved.muted ? 0 : saved.volume;
       }
+      if (saved.muted) setIsMuted(true);
       if (saved.playMode) setPlayMode(saved.playMode);
 
       if (saved.song) {
         setCurrentSong(saved.song);
         if (saved.position && saved.position > 1) {
           pendingSeekRef.current = saved.position;
+          // 同时把进度同步给 UI：否则保存 effect 会在未播放状态下用 0 覆盖存档
+          playbackProgress.update({
+            currentTime: saved.position,
+            duration: saved.song.duration || 0,
+          });
         }
         if (saved.playlistId) {
           const list = await getLocalPlaylists();
@@ -306,14 +450,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     } catch (e) {
       console.warn('[PlaybackStore] 恢复播放状态失败:', e);
+    } finally {
+      // 无论成功、失败还是非 Tauri 环境提前返回，都必须放行落盘
+      setIsRestored(true);
     }
   }, []);
 
-  // 音量 / 播放模式 / 当前歌曲变化时持久化（防抖）
+  // 音量 / 静音 / 播放模式 / 当前歌曲变化时持久化（防抖）
   useEffect(() => {
+    if (!isRestored) return;
     const t = setTimeout(() => {
       void savePlaybackPrefs({
         volume,
+        muted: isMuted,
         playMode,
         playlistId: activePlaylist?.id ?? null,
         song: currentSong,
@@ -321,18 +470,26 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
     }, 500);
     return () => clearTimeout(t);
-  }, [volume, playMode, activePlaylist, currentSong, queue, savePlaybackPrefs]);
-  // 暂停或退出时保存播放进度
-  const currentTimeRef = useRef(0);
-  currentTimeRef.current = currentTime;
+  }, [isRestored, volume, isMuted, playMode, activePlaylist, currentSong, queue, savePlaybackPrefs]);
+
+  // 播放进度落盘：暂停时存一次、退出前再存一次、播放中每 5 秒存一次
   useEffect(() => {
+    if (!isRestored) return;
     const save = () => {
-      if (currentSong) void savePlaybackPrefs({ position: currentTimeRef.current });
+      if (!currentSong) return;
+      const audio = audioRef.current;
+      // 还没载入音源时 audio.currentTime 恒为 0，必须回落到恢复出来的进度，别把存档抹平
+      const position = audio?.src ? audio.currentTime : playbackProgress.getSnapshot().currentTime;
+      void savePlaybackPrefs({ position });
     };
     if (!isPlaying) save();
     window.addEventListener('beforeunload', save);
-    return () => window.removeEventListener('beforeunload', save);
-  }, [isPlaying, currentSong, savePlaybackPrefs]);
+    const timer = isPlaying ? setInterval(save, PROGRESS_SAVE_INTERVAL_MS) : undefined;
+    return () => {
+      window.removeEventListener('beforeunload', save);
+      if (timer) clearInterval(timer);
+    };
+  }, [isRestored, isPlaying, currentSong, savePlaybackPrefs]);
 
   const refreshUserSettings = useCallback(async () => {
     const settings = await getUserSettings();
@@ -377,7 +534,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const settings = await getUserSettings();
     if (!settings.kugouToken || !settings.kugouUserId) return;
 
-
     // 防风控守卫：进行中的同步不重入；非强制调用受最小间隔限制
     if (syncInFlightRef.current) return;
     const now = Date.now();
@@ -396,30 +552,51 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (cloudLists.length > 0) {
         const localList = await getLocalPlaylists();
         const importedOnly = localList.filter((p) => !p.isUserOwned);
+        const mergedCloud: KuGouPlaylist[] = [];
+        const failedNames: string[] = [];
 
-        const mergedCloud = cloudLists.map((cloudP) => {
-          const cached = localList.find((p) => p.id === cloudP.id);
-          // 仅当缓存的曲目数已达到云端总数时才复用缓存；
-          // 缓存不完整（如历史版本只拉到 300/487 首）则丢弃缓存，走重新拉取
-          const cacheComplete =
-            cached &&
-            cached.songs.length > 0 &&
-            (cloudP.totalSongs > 0 ? cached.songs.length >= cloudP.totalSongs : true);
-          if (cacheComplete && cached) {
-            return {
-              ...cloudP,
-              songs: cached.songs,
-              totalSongs: Math.max(cached.songs.length, cloudP.totalSongs),
-            };
+        for (const cloudPlaylist of cloudLists) {
+          const cached = localList.find((p) => p.id === cloudPlaylist.id);
+          const cachedCount = cached?.songs.length ?? 0;
+          const listId = cloudPlaylist.listId;
+          // 曲目数必须与云端总数严格相等才复用缓存：云端删歌或增删相抵都会让数量不等，
+          // 过去「本地 >= 云端就复用 + Math.max」会让删除永远同步不下来
+          if (cachedCount === cloudPlaylist.totalSongs || !listId) {
+            mergedCloud.push(cached ? { ...cloudPlaylist, songs: cached.songs } : cloudPlaylist);
+            continue;
           }
-          return cloudP;
-        });
+          try {
+            const tracks = await fetchUserCloudPlaylistTracks(
+              listId,
+              settings.kugouToken,
+              settings.kugouUserId,
+              settings.kugouAppId
+            );
+            mergedCloud.push({ ...cloudPlaylist, songs: tracks, totalSongs: tracks.length });
+          } catch (err) {
+            // 分页在重试耗尽后会直接抛错：此时保留缓存，绝不写入残缺曲目列表
+            console.warn('[syncCloudPlaylists] 曲目拉取失败，保留本地缓存:', err);
+            failedNames.push(cloudPlaylist.name);
+            mergedCloud.push(
+              cached
+                ? { ...cloudPlaylist, songs: cached.songs, totalSongs: cached.songs.length }
+                : cloudPlaylist
+            );
+          }
+        }
 
         const all = [...mergedCloud, ...importedOnly];
         await saveAllPlaylistsToStorage(all);
         setPlaylists(all);
 
-        setActivePlaylist((prev) => prev ?? (all.length > 0 ? all[0] : null));
+        setActivePlaylist((prev) => {
+          if (!prev) return all.length > 0 ? all[0] : null;
+          return all.find((p) => p.id === prev.id) ?? prev;
+        });
+
+        if (failedNames.length > 0) {
+          setCloudSyncError(`${failedNames.join('、')} 曲目同步失败，已保留本地缓存`);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '云端歌单同步失败';
@@ -448,7 +625,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         refreshVipStatus();
       }
     });
-    tryAutoCheckin().catch(() => {});
   }, [refreshPlaylists, refreshUserSettings, syncCloudPlaylists, refreshVipStatus]);
 
   // Token 保活：酷狗登录态长期无请求会失效。运行期间每 6 小时发一次
@@ -462,41 +638,48 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!ok) {
           console.warn('[TokenKeepAlive] 保活请求失败，token 可能已失效，请重新扫码授权');
         }
-      } catch {
-        /* 网络异常忽略，下个周期重试 */
+      } catch (err) {
+        // 请求 URL 里带 token，异常信息可能包含它，只记录错误类型
+        console.warn('[TokenKeepAlive] 保活请求异常，下个周期重试:', err instanceof Error ? err.name : typeof err);
       }
     };
     const timer = setInterval(ping, 6 * 60 * 60 * 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // 根据当前播放时间定位歌词行
+  // 根据当前播放时间定位歌词行：进度来自独立 store，
+  // 且只在行号变化时才 setState —— 主 Provider 不会随每帧进度重渲染
   useEffect(() => {
-    if (!lyrics.length) {
-      setActiveLyricIndex(-1);
-      return;
-    }
-    let idx = -1;
-    for (let i = 0; i < lyrics.length; i++) {
-      if (currentTime >= lyrics[i].time) {
-        idx = i;
-      } else {
-        break;
+    const syncActiveLine = () => {
+      const lines = lyricsRef.current;
+      let idx = -1;
+      if (lines.length > 0) {
+        const time = playbackProgress.getSnapshot().currentTime;
+        for (let i = 0; i < lines.length; i++) {
+          if (time >= lines[i].time) {
+            idx = i;
+          } else {
+            break;
+          }
+        }
       }
-    }
-    setActiveLyricIndex(idx);
-  }, [currentTime, lyrics]);
+      setActiveLyricIndex((prev) => (prev === idx ? prev : idx));
+    };
+    syncActiveLine();
+    return playbackProgress.subscribe(syncActiveLine);
+  }, [lyrics]);
 
   // 播放单曲核心逻辑
   // reload：同一首歌换音源（切音质 / 重挂音效），不动队列、歌词与播放进度
-  const playSong = async (
-    song: KuGouSong,
-    opts?: { insertFront?: boolean; reload?: { startAt: number; autoplay: boolean } }
-  ) => {
+  const playSong = async (song: KuGouSong, opts?: PlaySongOptions) => {
     const requestId = ++playRequestIdRef.current;
     const reload = opts?.reload;
 
     if (!reload) {
+      // 换歌必须清掉上一首遗留的定位目标，否则新歌的 loadedmetadata 会被拖到旧位置
+      pendingSeekRef.current = null;
+      relinkRef.current = null;
+
       // 维护独立播放队列：队列中不存在时按需插入
       // （搜索结果插到最前面，其余场景追加到末尾；已存在则直接播放不重复添加）
       setQueue((prev) => {
@@ -505,30 +688,54 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
 
       setCurrentSong(song);
+      currentSongRef.current = song;
       setAudioSourceInfo(null);
-      setCurrentTime(0);
-      setDuration(0);
+      audioSourceInfoRef.current = null;
+      playbackProgress.reset();
       setLyrics([]);
+      lyricsRef.current = [];
+      setActiveLyricIndex(-1);
 
-      // 异步拉取歌词
-      fetchSongLyrics(song).then((lines) => setLyrics(lines));
+      // 快速切歌时旧请求会晚到：用序号挡掉过期歌词
+      const lyricsRequestId = ++lyricsRequestIdRef.current;
+      fetchSongLyrics(song)
+        .then((lines) => {
+          if (lyricsRequestIdRef.current !== lyricsRequestId) return;
+          setLyrics(lines);
+        })
+        .catch((err) => {
+          if (lyricsRequestIdRef.current !== lyricsRequestId) return;
+          console.warn('[PlayerContext] 歌词拉取失败:', err);
+        });
     }
 
     // 先停掉并卸载旧音源，避免新歌解析失败时继续播放上一首。
-    let audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
+    const stale = audioRef.current;
+    if (stale) {
+      stale.pause();
+      stale.removeAttribute('src');
+      stale.load();
     }
 
     setErrorMsg(null);
     setIsLoadingAudio(true);
 
+    /** 解析音源：切音质 / 重挂音效时链接换了，失败先原地重试一次再判定坏音源 */
+    const resolveWithRetry = async (): Promise<AudioSourceResult> => {
+      try {
+        return await resolveAudioSource(song);
+      } catch (err) {
+        if (!reload) throw err;
+        console.warn('[PlayerContext] 重解析音源失败，重试一次:', err);
+        return resolveAudioSource(song);
+      }
+    };
+
     try {
-      const sourceResult = await resolveAudioSource(song);
+      const sourceResult = await resolveWithRetry();
       if (playRequestIdRef.current !== requestId) return;
       setAudioSourceInfo(sourceResult);
+      audioSourceInfoRef.current = sourceResult;
 
       // 音效要走 Web Audio：跨域未放行的资源接进音频图只会输出静音，
       // 所以挂链前先探一次 CORS；已绑过图的元素遇到不支持的音源只能整个换掉。
@@ -539,17 +746,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (playRequestIdRef.current !== requestId) return;
         setEffectBlocked(!allowed);
         if (allowed) {
-          audio = audioRef.current;
-          if (audio) audio.crossOrigin = 'anonymous';
+          if (audioRef.current) audioRef.current.crossOrigin = 'anonymous';
           effectOn = true;
         } else if (effectChainRef.current) {
-          audio = swapMediaElement(false);
+          swapMediaElement(false);
         }
       } else {
         setEffectBlocked(false);
       }
 
-      audio = audioRef.current;
+      const audio = audioRef.current;
       if (!audio) return;
 
       if (reload && reload.startAt > 0) pendingSeekRef.current = reload.startAt;
@@ -563,102 +769,142 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (reload && !reload.autoplay) {
         audio.load();
-      } else {
-        await audio.play().then(() => {
-          if (playRequestIdRef.current !== requestId) {
-            audioRef.current?.pause();
-          }
-        });
+        return;
       }
+
+      try {
+        await audio.play();
+      } catch (err) {
+        if (playRequestIdRef.current !== requestId) return;
+        // 打断（被 pause / 换源顶掉、自动播放被系统拦截）不代表音源坏
+        if (isInterruptionError(err)) return;
+        // 地址过期 / 源站换链：先原地重解析一次，仍失败才跳下一首
+        console.warn('[PlayerContext] 播放被拒绝，尝试重解析音源:', err);
+        recoverAudioRef.current(err);
+        return;
+      }
+      if (playRequestIdRef.current !== requestId) audioRef.current?.pause();
     } catch (err: unknown) {
       if (playRequestIdRef.current !== requestId) return;
       console.error('[PlayerContext] 音源解析失败:', err);
-      const msg = err instanceof Error ? err.message : '播放失败';
-      setErrorMsg(msg);
+      setErrorMsg(err instanceof Error ? err.message : '播放失败');
       setIsPlaying(false);
       skipBrokenRef.current(err);
     } finally {
-      setIsLoadingAudio(false);
+      // 只有最新一次请求才有权收尾，过期请求不能盖掉新请求的 loading 状态
+      if (playRequestIdRef.current === requestId) setIsLoadingAudio(false);
     }
   };
 
-  const togglePlay = () => {
-    if (!audioRef.current || !currentSong) return;
-    if (isPlaying) {
-      audioRef.current.pause();
+  playSongRef.current = playSong;
+
+  /**
+   * 音源出问题时先尝试「原地重解析当前曲目」，仍不行才交给自动跳过：
+   * 长暂停后链接过期、源站换链都属于这一类，直接跳下一首会误杀好歌
+   */
+  recoverAudioRef.current = (reason) => {
+    const song = currentSongRef.current;
+    const audio = audioRef.current;
+    const alreadyRetried = relinkRef.current?.hash === song?.hash && relinkRef.current?.used;
+    if (!song || !audio || alreadyRetried) {
+      skipBrokenRef.current(reason);
       return;
     }
-    // 冷启动恢复的只是「上次播放的歌」这个记录，音源还没解析、audio 没有 src，
-    // 此时直接 play() 会被浏览器拒绝、表现为点了没反应，所以走一次完整解析。
-    if (!audioSourceInfo) {
-      void playSong(currentSong);
-      return;
-    }
-    // 已解析过但地址已失效（签名过期 / 源站换链）时 play() 同样会被拒，一并往前跳
-    audioRef.current.play().catch((e) => {
-      console.warn('播放恢复受阻:', e);
-      skipBrokenRef.current(e);
+    relinkRef.current = { hash: song.hash, used: true };
+    console.warn('[PlayerContext] 音源地址疑似失效，重解析当前曲目:', reason);
+    void playSongRef.current(song, {
+      reload: { startAt: audio.currentTime, autoplay: true },
     });
   };
 
+  // 成功出声说明音源可用：清掉失败记录，长会话不会累计误停
+  onPlayableRef.current = () => {
+    autoSkipRef.current.clear();
+    relinkRef.current = null;
+  };
+
+  // 解析不出地址 / 媒体元素报错时自动跳下一首，不让播放停在这首上
+  skipBrokenRef.current = (reason) => {
+    console.warn('[PlayerContext] 音源异常，自动跳过:', reason);
+    const hash = currentSongRef.current?.hash ?? '';
+    const failed = autoSkipRef.current;
+    // 同一首坏音源会同时抛 media error 和 play() 拒绝，只处理第一次
+    if (failed.has(hash)) return;
+    // 整队列都播不了时不能无限轮转，连续失败攒够上限就停在这里
+    if (failed.size >= AUTO_SKIP_LIMIT) {
+      setErrorMsg('队列中没有可播放的音源');
+      return;
+    }
+    failed.add(hash);
+    nextSongRef.current();
+  };
+
+  /** 播放（不依赖闭包里的播放状态，媒体键 / MediaSession 也能安全调用） */
+  const play = useCallback(() => {
+    const audio = audioRef.current;
+    const song = currentSongRef.current;
+    if (!audio || !song) return;
+    // 冷启动恢复的只是「上次播放的歌」这个记录，音源还没解析、audio 没有 src，
+    // 此时直接 play() 会被浏览器拒绝、表现为点了没反应，所以走一次完整解析。
+    if (!audioSourceInfoRef.current) {
+      void playSongRef.current(song);
+      return;
+    }
+    // 已解析过但地址已失效（签名过期 / 源站换链）时 play() 同样会被拒
+    void audio.play().catch((err) => {
+      if (isInterruptionError(err)) return;
+      console.warn('播放恢复受阻:', err);
+      recoverAudioRef.current(err);
+    });
+  }, []);
+
+  /** 暂停：独立语义，避免 play/pause 共用 toggle 时因状态过期反向 */
+  const pause = useCallback(() => {
+    audioRef.current?.pause();
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    if (isPlayingRef.current) pause();
+    else play();
+  }, [play, pause]);
+
   // 获取下一曲索引（基于独立播放队列）
   const getNextSongIndex = useCallback((): number => {
-    if (queue.length === 0 || !currentSong) return -1;
-    const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
     const total = queue.length;
+    if (total === 0) return -1;
+    const currentIndex = currentSong ? queue.findIndex((s) => sameSong(s, currentSong)) : -1;
 
-    if (playMode === 'random') {
-      let rand = Math.floor(Math.random() * total);
-      if (rand === currentIndex && total > 1) {
-        rand = (rand + 1) % total;
-      }
-      return rand;
-    }
-    return (currentIndex + 1) % total;
+    if (playMode === 'random') return pickRandomOtherIndex(total, currentIndex);
+    // 顺序播放到队尾就停（-1），只有单曲循环 / 列表循环才回绕
+    if (playMode === 'sequence' && currentIndex === total - 1) return -1;
+    return currentIndex + 1 < total ? currentIndex + 1 : 0;
   }, [queue, currentSong, playMode]);
 
   // 下一曲
-  const nextSong = useCallback(() => {
-    if (queue.length === 0) return;
+  const nextSong = () => {
     const nextIdx = getNextSongIndex();
-    if (nextIdx >= 0) {
-      playSong(queue[nextIdx]);
+    if (nextIdx < 0) {
+      // 顺序模式播到队尾：停在最后一首，不回绕
+      setIsPlaying(false);
+      return;
     }
-  }, [queue, getNextSongIndex]);
+    void playSong(queue[nextIdx]);
+  };
 
-  // 音源异常（解析不出地址 / 媒体元素报错）时自动跳下一首，不让播放停在这首上
-  const AUTO_SKIP_LIMIT = 5;
-  // failed: 本轮连续坏掉的歌，既用于挡同一首的重复报错，也用于卡死上限
-  const autoSkipRef = useRef<{ failed: Set<string> }>({ failed: new Set() });
-  useEffect(() => {
-    skipBrokenRef.current = (reason) => {
-      console.warn('[PlayerContext] 音源异常，自动跳过:', reason);
-      const hash = currentSong?.hash ?? '';
-      const { failed } = autoSkipRef.current;
-      // 同一首坏音源会同时抛 media error 和 play() 拒绝，只处理第一次
-      if (failed.has(hash)) return;
-      // 整队列都播不了时不能无限轮转，连续失败攒够上限就停在这里
-      if (failed.size >= AUTO_SKIP_LIMIT) {
-        setErrorMsg('队列中没有可播放的音源');
-        return;
-      }
-      failed.add(hash);
-      nextSong();
-    };
-  }, [currentSong, nextSong]);
+  nextSongRef.current = nextSong;
 
-  // 用户换了队列（播放全部 / 清空 / 插入新歌）就当作新一轮，失败记录作废
-  useEffect(() => {
-    autoSkipRef.current.failed.clear();
-  }, [queue]);
-
-  // 上一曲
+  // 上一曲：随机模式挑另一首；当前曲不在队列或已是第一首时回绕到队尾
   const prevSong = () => {
-    if (queue.length === 0 || !currentSong) return;
-    const currentIndex = queue.findIndex((s) => sameSong(s, currentSong));
     const total = queue.length;
-    const prevIdx = (currentIndex - 1 + total) % total;
-    playSong(queue[prevIdx]);
+    if (total === 0) return;
+    const currentIndex = currentSong ? queue.findIndex((s) => sameSong(s, currentSong)) : -1;
+    let prevIdx: number;
+    if (playMode === 'random') {
+      prevIdx = pickRandomOtherIndex(total, currentIndex);
+    } else {
+      prevIdx = currentIndex <= 0 ? total - 1 : currentIndex - 1;
+    }
+    void playSong(queue[prevIdx]);
   };
 
   // 播放列表对外暴露的就是独立播放队列
@@ -674,6 +920,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // 手动清空播放队列（仅停止播放并清空队列，不影响任何歌单）
   const clearQueue = useCallback(async () => {
     playRequestIdRef.current += 1;
+    lyricsRequestIdRef.current += 1;
+    pendingSeekRef.current = null;
+    relinkRef.current = null;
+
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -681,25 +931,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.load();
     }
     setCurrentSong(null);
+    currentSongRef.current = null;
     setAudioSourceInfo(null);
+    audioSourceInfoRef.current = null;
+    playbackProgress.reset();
     setLyrics([]);
+    lyricsRef.current = [];
     setActiveLyricIndex(-1);
     setErrorMsg(null);
     setIsPlaying(false);
     setIsLoadingAudio(false);
-    setCurrentTime(0);
-    setDuration(0);
     setQueue([]);
     // 清空队列时同步移除“上次播放”的恢复记录
     await savePlaybackPrefs({ song: null, position: 0, queue: [] });
   }, [savePlaybackPrefs]);
 
-  // 媒体元素里的「自然播放结束」读的是 ref，这里同步最新的 nextSong
+  // 用户换了队列（播放全部 / 清空 / 插入新歌）就当作新一轮，失败记录作废
   useEffect(() => {
-    nextSongRef.current = nextSong;
-  }, [nextSong]);
+    autoSkipRef.current = new Set();
+  }, [queue]);
 
-  const seek = (time: number) => {
+  const seek = useCallback((time: number) => {
     const audio = audioRef.current;
     if (!audio) return;
 
@@ -707,42 +959,43 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // 此时先记住目标位置，待元数据加载完成后再定位
     if (!audio.src || audio.readyState === 0) {
       pendingSeekRef.current = time;
-      setCurrentTime(time);
+      playbackProgress.update({ currentTime: time });
       return;
     }
 
     try {
       audio.currentTime = time;
-      setCurrentTime(time);
+      playbackProgress.update({ currentTime: time });
     } catch (e) {
       console.warn('[PlayerContext] seek 失败，稍后重试定位:', e);
       pendingSeekRef.current = time;
     }
-  };
+  }, []);
 
-  const setVolume = (val: number) => {
+  const setVolume = useCallback((val: number) => {
     const clamped = Math.max(0, Math.min(1, val));
     setVolumeState(clamped);
+    volumeRef.current = clamped;
     if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : clamped;
+      audioRef.current.volume = isMutedRef.current ? 0 : clamped;
     }
-  };
+  }, []);
 
-  const toggleMute = () => {
-    setIsMuted((prev) => {
-      const next = !prev;
-      if (audioRef.current) {
-        audioRef.current.volume = next ? 0 : volume;
-      }
-      return next;
-    });
-  };
+  const toggleMute = useCallback(() => {
+    const next = !isMutedRef.current;
+    isMutedRef.current = next;
+    setIsMuted(next);
+    if (audioRef.current) {
+      audioRef.current.volume = next ? 0 : volumeRef.current;
+    }
+  }, []);
 
-  const cyclePlayMode = () => {
+  const cyclePlayMode = useCallback(() => {
     const modes: PlayMode[] = ['sequence', 'loop', 'single', 'random'];
-    const nextIndex = (modes.indexOf(playMode) + 1) % modes.length;
-    setPlayMode(modes[nextIndex]);
-  };
+    const next = modes[(modes.indexOf(playModeRef.current) + 1) % modes.length];
+    playModeRef.current = next;
+    setPlayMode(next);
+  }, []);
 
   // 切音质：落盘后立刻用新档位重解析当前曲目，进度与播放状态原样接续
   const setAudioQuality = (quality: AudioQuality) => {
@@ -795,8 +1048,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setEffectBlocked(false);
   };
 
+  // 先点 A 再点 B 时，A 的慢请求可能后到并把视图抢回 A：用序号挡掉过期结果
+  const selectSeqRef = useRef(0);
   const selectPlaylist = async (playlist: KuGouPlaylist) => {
+    const seq = ++selectSeqRef.current;
     setActivePlaylist(playlist);
+
     // 若为账号云端歌单且尚未拉取曲目列表，异步拉取并缓存
     if (
       playlist.isUserOwned &&
@@ -813,6 +1070,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           userSettings.kugouUserId,
           userSettings.kugouAppId
         );
+        if (selectSeqRef.current !== seq) return;
         if (tracks.length > 0) {
           const updated: KuGouPlaylist = {
             ...playlist,
@@ -821,11 +1079,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             coverUrl: playlist.coverUrl || tracks[0]?.coverUrl || '',
           };
           setActivePlaylist(updated);
-          setPlaylists((prev) => {
-            const next = prev.map((p) => (p.id === playlist.id ? updated : p));
-            saveAllPlaylistsToStorage(next);
-            return next;
-          });
+          // 落盘必须放在 updater 外面：StrictMode 下 updater 会执行两次，副作用会重复触发
+          const nextPlaylists = playlistsRef.current.map((p) =>
+            p.id === playlist.id ? updated : p
+          );
+          setPlaylists(nextPlaylists);
+          playlistsRef.current = nextPlaylists;
+          void saveAllPlaylistsToStorage(nextPlaylists);
         }
       } catch (err) {
         console.warn('[selectPlaylist] 加载云歌歌曲目失败:', err);
@@ -837,7 +1097,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     song: KuGouSong,
     playlistId: string
   ): Promise<{ success: boolean; message: string }> => {
-    const target = playlists.find((p) => p.id === playlistId);
+    const target = playlistsRef.current.find((p) => p.id === playlistId);
     if (!target) {
       return { success: false, message: '未找到目标歌单' };
     }
@@ -857,11 +1117,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         userSettings.kugouUserId,
         userSettings.kugouAppId
       );
-      if (cloudRes.success) {
-        cloudNotice = '，并已成功同步至酷狗账号！';
-      } else {
-        cloudNotice = ` (本地已加入，云端同步: ${cloudRes.message})`;
+      // 云端失败就不能只写本地：下次同步会把它冲掉，变成幽灵歌曲
+      if (!cloudRes.success) {
+        return { success: false, message: `云端加入失败: ${cloudRes.message}` };
       }
+      cloudNotice = '，并已成功同步至酷狗账号！';
     }
 
     // 列表按倒序展示（最新在前），新歌追加到数组末尾才会出现在第一位
@@ -873,8 +1133,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       coverUrl: target.coverUrl || song.coverUrl,
     };
 
-    const nextPlaylists = playlists.map((p) => (p.id === playlistId ? updatedPlaylist : p));
+    const nextPlaylists = playlistsRef.current.map((p) =>
+      p.id === playlistId ? updatedPlaylist : p
+    );
     setPlaylists(nextPlaylists);
+    playlistsRef.current = nextPlaylists;
     if (activePlaylist?.id === playlistId) {
       setActivePlaylist(updatedPlaylist);
     }
@@ -890,7 +1153,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     song: KuGouSong,
     playlistId: string
   ): Promise<{ success: boolean; message: string }> => {
-    const target = playlists.find((p) => p.id === playlistId);
+    const target = playlistsRef.current.find((p) => p.id === playlistId);
     if (!target) {
       return { success: false, message: '未找到目标歌单' };
     }
@@ -920,8 +1183,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       totalSongs: updatedSongs.length,
     };
 
-    const nextPlaylists = playlists.map((p) => (p.id === playlistId ? updatedPlaylist : p));
+    const nextPlaylists = playlistsRef.current.map((p) =>
+      p.id === playlistId ? updatedPlaylist : p
+    );
     setPlaylists(nextPlaylists);
+    playlistsRef.current = nextPlaylists;
     if (activePlaylist?.id === playlistId) {
       setActivePlaylist(updatedPlaylist);
     }
@@ -934,10 +1200,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deletePlaylistById = async (id: string) => {
+    selectSeqRef.current += 1;
     await deleteLocalPlaylist(id);
     await refreshPlaylists();
     if (activePlaylist?.id === id) {
-      const remaining = playlists.filter((p) => p.id !== id);
+      const remaining = playlistsRef.current.filter((p) => p.id !== id);
       setActivePlaylist(remaining.length > 0 ? remaining[0] : null);
     }
   };
@@ -945,6 +1212,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // ===== 键盘快捷键：空格 播放/暂停，←→ 快退/快进 5s，↑↓ 音量 =====
   // 另支持标准媒体键（车机方向盘 / 蓝牙媒体按键 / 部分键盘）：
   // MediaPlayPause / MediaTrackNext / MediaTrackPrevious / MediaStop
+  // 监听只绑一次，具体动作从 actionsRef 取最新实现，进度从 store 现取，不会每帧解绑重绑
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -958,63 +1226,65 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return;
       }
 
+      const actions = actionsRef.current;
+
       // 标准媒体键：不受「是否有当前歌曲」限制，切歌/清空队列后仍可响应
       switch (e.key) {
         case 'MediaPlayPause':
           e.preventDefault();
-          togglePlay();
+          actions.togglePlay();
           return;
         case 'MediaPlay':
           e.preventDefault();
-          if (!isPlaying) togglePlay();
+          actions.play();
           return;
         case 'MediaPause':
           e.preventDefault();
-          if (isPlaying) togglePlay();
+          actions.pause();
           return;
         case 'MediaTrackNext':
           e.preventDefault();
-          nextSong();
+          actions.next();
           return;
         case 'MediaTrackPrevious':
           e.preventDefault();
-          prevSong();
+          actions.prev();
           return;
         case 'MediaStop':
           e.preventDefault();
-          if (audioRef.current) audioRef.current.pause();
+          actions.pause();
           return;
       }
 
-      if (!currentSong) return;
+      if (!currentSongRef.current) return;
 
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          togglePlay();
+          actions.togglePlay();
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          seek(Math.max(0, currentTime - 5));
+          actions.seekBy(-5);
           break;
         case 'ArrowRight':
           e.preventDefault();
-          seek(Math.min(duration || 0, currentTime + 5));
+          actions.seekBy(5);
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setVolume(Math.min(1, (isMuted ? 0 : volume) + 0.05));
+          actions.nudgeVolume(0.05);
           break;
         case 'ArrowDown':
           e.preventDefault();
-          setVolume(Math.max(0, volume - 0.05));
+          actions.nudgeVolume(-0.05);
           break;
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentSong, currentTime, duration, volume, isMuted, isPlaying, togglePlay, nextSong, prevSong, seek, setVolume]);
+  }, []);
 
   // ===== 系统媒体控制（Media Session）：macOS 控制中心 / 媒体键 =====
   useEffect(() => {
@@ -1041,13 +1311,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const ms = (navigator as Navigator & { mediaSession?: MediaSession }).mediaSession;
     if (!ms) return;
     try {
-      ms.setActionHandler('play', () => togglePlay());
-      ms.setActionHandler('pause', () => togglePlay());
-      ms.setActionHandler('stop', () => {
-        if (audioRef.current) audioRef.current.pause();
-      });
-      ms.setActionHandler('previoustrack', () => prevSong());
-      ms.setActionHandler('nexttrack', () => nextSong());
+      // play / pause 各走各的语义：都调 togglePlay 会依赖闭包里的播放状态而反向
+      ms.setActionHandler('play', () => actionsRef.current.play());
+      ms.setActionHandler('pause', () => actionsRef.current.pause());
+      ms.setActionHandler('stop', () => actionsRef.current.pause());
+      ms.setActionHandler('previoustrack', () => actionsRef.current.prev());
+      ms.setActionHandler('nexttrack', () => actionsRef.current.next());
       ms.setActionHandler('seekto', (d) => {
         if (d.seekTime != null) seek(d.seekTime);
       });
@@ -1056,61 +1325,84 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch {
       // 当前平台不支持的 action 忽略
     }
-  }, [currentSong, togglePlay, prevSong, nextSong, seek]);
+  }, [seek]);
+
+  // 渲染期安装动作表：上面绑定一次的监听都从这里取最新实现
+  actionsRef.current = {
+    play,
+    pause,
+    togglePlay,
+    next: nextSong,
+    prev: prevSong,
+    seekBy: (delta: number) => {
+      const { currentTime, duration } = playbackProgress.getSnapshot();
+      const target = currentTime + delta;
+      seek(delta < 0 ? Math.max(0, target) : duration > 0 ? Math.min(duration, target) : target);
+    },
+    nudgeVolume: (delta: number) => {
+      setVolume((isMutedRef.current ? 0 : volumeRef.current) + delta);
+    },
+  };
+
+  // 主 Context 不再持有高频进度：这里的 currentTime / duration 只是渲染时快照，
+  // 订阅进度请使用 usePlaybackProgress()（嵌套 Provider 由 PlaybackProgress 提供）
+  const progressSnapshot = playbackProgress.getSnapshot();
 
   return (
-    <PlayerContext.Provider
-      value={{
-        userSettings,
-        refreshUserSettings,
+    <PlaybackProgressProvider seek={seek}>
+      <PlayerContext.Provider
+        value={{
+          userSettings,
+          refreshUserSettings,
 
-        refreshPlaylists,
-        isSyncingCloud,
-        syncCloudPlaylists,
-        cloudSyncError,
-        playlists,
-        activePlaylist,
-        selectPlaylist,
-        deletePlaylistById,
-        vipStatus,
-        refreshVipStatus,
-        addSongToPlaylist,
-        removeSongFromPlaylist,
+          refreshPlaylists,
+          isSyncingCloud,
+          syncCloudPlaylists,
+          cloudSyncError,
+          playlists,
+          activePlaylist,
+          selectPlaylist,
+          deletePlaylistById,
+          vipStatus,
+          refreshVipStatus,
+          addSongToPlaylist,
+          removeSongFromPlaylist,
 
-        currentSong,
-        isPlaying,
-        currentTime,
-        duration,
-        volume,
-        isMuted,
-        playMode,
-        isLoadingAudio,
-        audioSourceInfo,
-        errorMsg,
-        audioQuality,
-        setAudioQuality,
-        audioEffect,
-        setAudioEffect,
-        effectBlocked,
-        queueSongs,
-        clearQueue,
+          currentSong,
+          isPlaying,
+          currentTime: progressSnapshot.currentTime,
+          duration: progressSnapshot.duration,
+          volume,
+          isMuted,
+          playMode,
+          isLoadingAudio,
+          audioSourceInfo,
+          errorMsg,
+          audioQuality,
+          setAudioQuality,
+          audioEffect,
+          setAudioEffect,
+          effectBlocked,
+          queueSongs,
+          clearQueue,
 
-        lyrics,
-        activeLyricIndex,
+          lyrics,
+          activeLyricIndex,
 
-        playSong,
-        playAll,
-        togglePlay,
-        nextSong,
-        prevSong,
-        seek,
-        setVolume,
-        toggleMute,
-        cyclePlayMode,
-      }}
-    >
-      {children}
-    </PlayerContext.Provider>
+          playSong,
+          playAll,
+          togglePlay,
+          nextSong,
+          prevSong,
+          seek,
+          setVolume,
+          toggleMute,
+          cyclePlayMode,
+        }}
+      >
+        {children}
+      </PlayerContext.Provider>
+    </PlaybackProgressProvider>
   );
 };
 
