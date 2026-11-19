@@ -179,7 +179,7 @@ jobs:
             case "$abi" in
               universal) out="KuGouPlayer-${{ github.ref_name }}-android-universal.apk" ;;
               aarch64)   out="KuGouPlayer-${{ github.ref_name }}-android-arm64.apk" ;;
-              armv7)     out="KuGouPlayer-${{ github.ref_name }}-android-armv7.apk" ;;
+              armv7|arm) out="KuGouPlayer-${{ github.ref_name }}-android-armv7.apk" ;;
               x86)       out="KuGouPlayer-${{ github.ref_name }}-android-x86.apk" ;;
               x86_64)    out="KuGouPlayer-${{ github.ref_name }}-android-x86_64.apk" ;;
               *)         out="KuGouPlayer-${{ github.ref_name }}-android-${abi}.apk" ;;
