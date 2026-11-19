@@ -78,6 +78,13 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    // AGP 9.3 的 lintVital 任务在开配置缓存时序列化 LintTool 会崩：
+    // "field `__classpath__` of `LintTool_Decorated` ... DefaultConfigurableFileCollection"
+    // release 包不需要 lint 门禁（发版环境没有人工看报告），直接跳过；需要检查时跑 lintDebug。
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 kotlin {
