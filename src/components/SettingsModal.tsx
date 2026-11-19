@@ -36,6 +36,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [settings, setSettings] = useState<UserSettings>({
     kugouToken: '',
     kugouUserId: '',
+    autoCheckinVip: true,
     lastCheckinDate: '',
     customFallbackApi: '',
   });
@@ -114,7 +115,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 
           await refreshUserSettings();
           await syncCloudPlaylists(true);
-          refreshVipStatus();
+
+          // 登录成功后立即领一次（与启动自动签到共用单飞保护，不会并发重入）
+          if (updated.kugouToken && updated.kugouUserId) {
+            setIsCheckinLoading(true);
+            setCheckinProgress('登录成功，正在领取今日会员时长…');
+            checkinConceptVip(updated.kugouToken, updated.kugouUserId, setCheckinProgress)
+              .then((r) => {
+                setCheckinMessage(r.message);
+                setCheckinOk(r.success);
+                refreshVipStatus();
+              })
+              .finally(() => {
+                setIsCheckinLoading(false);
+                setCheckinProgress(null);
+              });
+          } else {
+            refreshVipStatus();
+          }
         } else if (checkRes.status === 5) {
           setIsQrExpired(true);
           setQrStatusText('二维码已失效，点击刷新');
@@ -507,11 +525,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
               )}
 
-              {/* 打卡：只在用户点击时真实领取，启动/登录后不再自动执行 */}
+              {/* 打卡：启动自动签到（可在下方关闭）+ 手动领取，共用单飞并发保护 */}
               <div className="set-block" style={{ marginTop: 12 }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="set-block-title">每日打卡</p>
+                    <p className="set-block-title">启动时自动打卡</p>
+                    <p className="set-block-note">每日首次启动自动领取概念版会员时长</p>
+                  </div>
+                  <label className="check shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={settings.autoCheckinVip ?? true}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setSettings({ ...settings, autoCheckinVip: next });
+                        void saveUserSettings({ autoCheckinVip: next });
+                      }}
+                      aria-label="启动时自动打卡"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-3" style={{ marginTop: 12 }}>
+                  <div className="min-w-0">
+                    <p className="set-block-title">每日领取</p>
                     <p className="set-block-note">点击领取今日概念版会员时长（每日最多 8 次，每次 3 小时）。</p>
                   </div>
                   <span

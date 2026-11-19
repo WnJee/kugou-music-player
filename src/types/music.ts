@@ -87,8 +87,10 @@ export interface UserSettings {
   avatar?: string;
   /** VIP 类型描述 */
   vipType?: string;
-  /** 上次手动打卡日期 (YYYY-MM-DD) */
+  /** 上次打卡日期 (YYYY-MM-DD) */
   lastCheckinDate?: string;
+  /** 启动时自动执行每日领取（默认开启） */
+  autoCheckinVip?: boolean;
   /** 自定义备用音源 API 地址 */
   customFallbackApi: string;
   /** 登录平台 appid（3116=概念版，1005=标准版；决定网关签名与鉴权平台） */

@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   kugouToken: '',
   kugouUserId: '',
   lastCheckinDate: '',
+  autoCheckinVip: true,
   customFallbackApi: '',
   audioQuality: DEFAULT_AUDIO_QUALITY,
   audioEffect: 'off',
@@ -309,6 +310,11 @@ export interface CheckinResult {
   message: string;
 }
 
+/** 内部结果：多带一个「服务端已响过」的标记，用于避免重复跑完整条领取流程 */
+interface CheckinAttempt extends CheckinResult {
+  serverTouched: boolean;
+}
+
 /**
  * 酷狗概念版每日领取 VIP（单平台、仅在用户点击时执行）
  *
@@ -323,9 +329,9 @@ async function performCheckinWith(
   userid: string,
   platform: GatewayPlatform,
   onProgress?: CheckinProgressHandler
-): Promise<CheckinResult> {
+): Promise<CheckinAttempt> {
   if (!token || !userid) {
-    return { success: false, message: '未配置 Token 或 UserID' };
+    return { success: false, message: '未配置 Token 或 UserID', serverTouched: false };
   }
 
   const mid = await getDeviceMid();
@@ -442,36 +448,98 @@ async function performCheckinWith(
           : quotaExhausted || remain === 0
             ? '今日次数已领满'
             : '已到账（服务端已确认）';
-      return { success: true, message: `概念版会员打卡完成：${claimMsg}${expiryHint}` };
+      return {
+        success: true,
+        message: `概念版会员打卡完成：${claimMsg}${expiryHint}`,
+        serverTouched,
+      };
     }
 
-    return { success: false, message: lastMsg || '签到失败：未领取到任何会员时长' };
+    return { success: false, message: lastMsg || '签到失败：未领取到任何会员时长', serverTouched };
   } catch (err) {
     console.warn('[checkin] 签到失败:', err);
-    return { success: false, message: err instanceof Error ? err.message : '签到网络异常' };
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : '签到网络异常',
+      serverTouched: false,
+    };
   }
 }
 
 /**
- * 手动签到入口（设置页「立即打卡」触发），主平台失败时切换另一平台再试一次
+ * 并发保护：同一时刻只允许一次签到流程
+ *
+ * 启动自动签到、登录后签到、设置页手动签到可能同时触发；领取链路本身是串行
+ * （每首 30s 播放间隔限流 + 最多 8 次），并发重入会重复播放倒计时与上报，
+ * 所以这里做单飞：后到的调用直接等同一个 Promise，拿到相同结果。
  */
-export async function checkinConceptVip(
+let checkinInflight: Promise<CheckinResult> | null = null;
+
+async function runCheckinWithFallback(
   token: string,
   userid: string,
   onProgress?: CheckinProgressHandler
-): Promise<{ success: boolean; message: string }> {
-  if (!token || !userid) {
-    return { success: false, message: '未配置 Token 或 UserID' };
-  }
-
+): Promise<CheckinResult> {
   const settings = await getUserSettings();
   const primary = platformOfAppId(settings.kugouAppId);
   const first = await performCheckinWith(token, userid, primary, onProgress);
-  if (first.success) return first;
+  // 服务端已响应过（时长可能已到账）：不换平台重跑，否则整条流程会重复执行数分钟
+  if (first.success || first.serverTouched) return first;
 
-  onProgress?.('切换备用平台重试…');
+  onProgress?.('当前平台未到账，切换备用平台重试…');
   const second = await performCheckinWith(token, userid, otherPlatform(primary), onProgress);
   return second.success ? second : first;
+}
+
+/**
+ * 签到入口（手动/自动/登录后共用），带单飞并发保护
+ */
+export function checkinConceptVip(
+  token: string,
+  userid: string,
+  onProgress?: CheckinProgressHandler
+): Promise<CheckinResult> {
+  if (!token || !userid) {
+    return Promise.resolve({ success: false, message: '未配置 Token 或 UserID' });
+  }
+  if (checkinInflight) {
+    onProgress?.('已有签到进行中，等待结果…');
+    return checkinInflight;
+  }
+
+  const task = runCheckinWithFallback(token, userid, onProgress).finally(() => {
+    if (checkinInflight === task) checkinInflight = null;
+  });
+  checkinInflight = task;
+  return task;
+}
+
+/** 签到是否正在进行（UI 用于禁用按钮） */
+export function isCheckinRunning(): boolean {
+  return checkinInflight !== null;
+}
+
+/**
+ * 尝试自动执行每日签到（若开启且今日未签）
+ * 启动时网络可能尚未就绪，失败自动重试最多 3 次
+ */
+export async function tryAutoCheckin(): Promise<void> {
+  const settings = await getUserSettings();
+  if (settings.autoCheckinVip === false) return;
+  if (!settings.kugouToken || !settings.kugouUserId) return;
+  if (settings.lastCheckinDate === todayLocalDate()) return; // 今日已签过
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await checkinConceptVip(settings.kugouToken, settings.kugouUserId);
+    if (res.success) {
+      console.info('[tryAutoCheckin] 自动签到成功:', res.message);
+      return;
+    }
+    console.warn(`[tryAutoCheckin] 自动签到失败 (${attempt}/3): ${res.message}`);
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
 }
 
 interface TrackerV5Response {

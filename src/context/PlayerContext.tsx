@@ -19,6 +19,7 @@ import {
   resolveAudioSource,
   saveUserSettings,
   keepTokenAlive,
+  tryAutoCheckin,
 } from '../services/audioSource';
 import { AudioEffectChain, audioEffectPreset, checkAudioCors } from '../services/audioEffects';
 import { DEFAULT_AUDIO_QUALITY, audioQualityOption } from '../services/audioQuality';
@@ -646,6 +647,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         refreshVipStatus();
       }
     });
+    // 启动自动打卡：内部自带「今日已签 / 开关关闭」判断与单飞保护，不会与手动/登录后签到并发
+    tryAutoCheckin().catch(() => {});
   }, [refreshPlaylists, refreshUserSettings, syncCloudPlaylists, refreshVipStatus]);
 
   // Token 保活：酷狗登录态长期无请求会失效。运行期间每 6 小时发一次
