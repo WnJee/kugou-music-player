@@ -57,8 +57,12 @@ export interface HttpRequestOptions {
   body?: unknown;
   /** 是否禁止自动重定向（用于提取 302 Location 短链地址） */
   manualRedirect?: boolean;
-  /** 超时毫秒数 */
+  /** 超时毫秒数（覆盖建连 + 响应头 + 读取 body 整段） */
   timeout?: number;
+  /** 外部取消信号：切歌时中止未完成请求，降低触发风控的概率 */
+  signal?: AbortSignal;
+  /** true 时非 2xx 直接抛 HttpError（默认 false，保持返回 status 的原有行为） */
+  throwOnHttpError?: boolean;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -66,7 +70,7 @@ export interface HttpResponse<T = unknown> {
   statusText: string;
   headers: Record<string, string>;
   data: T;
-  /** 重定向目标地址（当 manualRedirect 生效且状态码为 301/302 时返回） */
+  /** 重定向目标地址（当 manualRedirect 生效且状态码为 301/302/303/307/308 时返回） */
   redirectUrl?: string;
   /** 最终请求响应的真实 URL（在跟随重定向后返回最终地址） */
   finalUrl?: string;
