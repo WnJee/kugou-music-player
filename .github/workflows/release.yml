@@ -33,7 +33,8 @@ jobs:
             args: --target universal-apple-darwin
             targets: aarch64-apple-darwin,x86_64-apple-darwin
           - platform: windows-latest
-            args: ''
+            # 只发 NSIS setup.exe，不再产出 msi
+            args: --bundles nsis
             targets: ''
     needs: create-release
     runs-on: ${{ matrix.platform }}
@@ -129,17 +130,37 @@ jobs:
             } > keystore.properties
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS secrets，安卓包回退为 debug 签名"
+            echo "::warning::未配置 ANDROID_KEYSTORE secrets，改用 debug keystore 签 release 包（签名不跨版本稳定）"
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build Android APK (release signed)
         if: steps.keystore.outputs.signed == 'true'
-        run: npx tauri android build --apk --target aarch64 --target armv7
+        run: npx tauri android build --apk --split-per-abi --target aarch64 --target armv7
 
-      - name: Build Android APK (debug fallback)
+      # secrets 未配置时用固定的 debug keystore 签 release 包：
+      # release 变体开了优化并 strip 掉调试符号，体积远小于 --debug
+      - name: Fallback keystore for release signing
         if: steps.keystore.outputs.signed != 'true'
-        run: npx tauri android build --apk --debug --target aarch64 --target armv7
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          cd src-tauri/gen/android
+          {
+            echo "storeFile=$HOME/.android/debug.keystore"
+            echo "storePassword=android"
+            echo "keyAlias=androiddebugkey"
+            echo "keyPassword=android"
+          } > keystore.properties
+
+      - name: Build Android APK (release, per-ABI)
+        if: steps.keystore.outputs.signed != 'true'
+        run: npx tauri android build --apk --split-per-abi --target aarch64 --target armv7
 
       - name: Upload APKs to release
         env:
