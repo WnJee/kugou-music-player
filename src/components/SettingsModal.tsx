@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { checkinConceptVip, fetchUserProfile, getUserSettings, saveUserSettings } from '../services/audioSource';
 import { checkLoginQrCode, createLoginQrCode } from '../services/kugouAuth';
+import { todayLocalDate } from '../utils/date';
 import { usePlayer } from '../context/PlayerContext';
 import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import type { UserSettings } from '../types/music';
@@ -506,18 +507,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
               )}
 
-              {/* 打卡：只保留手动入口，不再伪造听歌/广告上报去刷时长 */}
+              {/* 打卡：只在用户点击时真实领取，启动/登录后不再自动执行 */}
               <div className="set-block" style={{ marginTop: 12 }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="set-block-title">每日打卡</p>
-                    <p className="set-block-note">手动校验当前账号会员权益，并记录今日打卡。</p>
+                    <p className="set-block-note">点击领取今日概念版会员时长（每日最多 8 次，每次 3 小时）。</p>
                   </div>
                   <span
                     className="mono shrink-0"
                     style={{ fontSize: 'var(--fs-1)', color: 'var(--ink-3)' }}
                   >
-                    {settings.lastCheckinDate ? `今日已打卡 ${settings.lastCheckinDate}` : '今日未打卡'}
+                    {settings.lastCheckinDate === todayLocalDate()
+                      ? '今日已打卡'
+                      : settings.lastCheckinDate
+                        ? `上次打卡 ${settings.lastCheckinDate}`
+                        : '未打卡'}
                   </span>
                 </div>
 

@@ -286,7 +286,21 @@ export async function keepTokenAlive(token: string, userid: string): Promise<boo
   return (await keepTokenAliveDetailed(token, userid)).ok;
 }
 
-/** 签到进度回调：向 UI 实时播报签到进展 */
+/** 概念版听歌任务接口要求的客户端身份：clientver 与 UA 必须成对使用，否则广告上报固定返回 20028 */
+const TASK_CLIENTVER = 10566;
+const TASK_UA = 'Android13-1070-10566-201-0-ReportPlaySongToServerProtocol-wifi';
+/** 每日可领取次数与领取节奏（间隔过短会被接口限流 30000） */
+const CLAIM_DAILY_TOTAL = 8;
+const CLAIM_INTERVAL_MS = 8000;
+const CLAIM_MAX_ATTEMPTS = CLAIM_DAILY_TOTAL + 4;
+const CLAIM_RATE_LIMITED = 30000;
+const CLAIM_QUOTA_EXHAUSTED = 30002;
+const CLAIM_RATE_RETRY = 3;
+const CLAIM_RETRY_BACKOFF_MS = 15000;
+/** 单次点击的硬时限：超过即按当前结果收尾，避免 UI 无限转圈 */
+const CLAIM_TOTAL_DEADLINE_MS = 90000;
+
+/** 签到进度回调：向 UI 实时播报领取进展 */
 export type CheckinProgressHandler = (message: string) => void;
 
 /** 签到结果：success + 可直接展示给用户的提示文案 */
@@ -296,13 +310,13 @@ export interface CheckinResult {
 }
 
 /**
- * 酷狗概念版签到（单平台）
+ * 酷狗概念版每日领取 VIP（单平台、仅在用户点击时执行）
  *
- * 说明：概念版领取会员时长的接口只有「听歌上报」与「广告播放上报」两类，
- * 都要求真实播放行为参与；用固定歌曲 id / 定时伪造上报属于刷接口，会被风控，
- * 因此这些伪造实现已移除。此处只做真实的账号权益查询：
- *   1. 校验登录态并查询概念版会员到期时间；
- *   2. 记录本地签到日期（本地时区，避免东八区 0-8 点算成前一天）。
+ * 流程与概念版 App 的「听歌领会员」一致：
+ *   1. 听歌上报 /youth/v2/report/listen_song
+ *   2. 广告播放上报 /youth/v1/ad/play_report 领取会员时长（每日最多 8 次，每次 3 小时）
+ *   3. 查询 /v1/get_union_vip 拿概念版会员到期时间
+ * 只在用户点「立即打卡」时跑一次，启动/登录后都不再自动执行（H9）。
  */
 async function performCheckinWith(
   token: string,
@@ -314,31 +328,126 @@ async function performCheckinWith(
     return { success: false, message: '未配置 Token 或 UserID' };
   }
 
-  onProgress?.('正在校验登录态…');
+  const mid = await getDeviceMid();
+
+  const kgPost = async <T>(
+    path: string,
+    data: unknown
+  ): Promise<T> => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      dfid: '-',
+      mid,
+      uuid: '-',
+      appid: platform.appid,
+      clientver: TASK_CLIENTVER,
+      userid: Number(userid),
+      clienttime: timestamp,
+      token,
+    };
+    const bodyStr = JSON.stringify(data);
+    params.signature = signWithSalt(platform.signatureSalt, params, bodyStr);
+
+    return httpPost<T>(`https://gateway.kugou.com${path}`, data, {
+      query: params,
+      headers: {
+        'User-Agent': TASK_UA,
+        Cookie: `token=${token}; userid=${userid}; dfid=-`,
+        dfid: '-',
+        clienttime: String(timestamp),
+        mid,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+    });
+  };
+
+  onProgress?.('正在连接服务端…');
   try {
+    // 1. 听歌上报：触发每日听歌任务，失败不阻断领取
+    try {
+      const listen = await kgPost<{ status: number; error_code: number; error_msg?: string }>(
+        '/youth/v2/report/listen_song',
+        { mixsongid: 666075191 }
+      );
+      console.info('[checkin] 听歌上报:', listen?.status, listen?.error_msg || '');
+    } catch (err) {
+      console.warn('[checkin] 听歌上报失败，继续领取:', err);
+    }
+
+    // 2. 广告播放上报领取会员时长：remain 归零即今日领满；30000 是限流，退避重试不计次
+    let claimed = 0;
+    let remain: number | undefined;
+    let quotaExhausted = false;
+    let serverTouched = false;
+    let lastMsg = '';
+    let rateLimited = 0;
+    const deadline = Date.now() + CLAIM_TOTAL_DEADLINE_MS;
+
+    for (
+      let attempt = 1;
+      attempt <= CLAIM_MAX_ATTEMPTS && claimed < CLAIM_DAILY_TOTAL;
+      attempt++
+    ) {
+      if (Date.now() > deadline) {
+        lastMsg = lastMsg || '领取耗时过长，已提前结束';
+        break;
+      }
+      const now = Date.now();
+      const ad = await kgPost<{
+        status: number;
+        error_code: number;
+        error_msg?: string;
+        data?: { remain?: number; award_vip_hour?: number };
+      }>('/youth/v1/ad/play_report', {
+        ad_id: 12307537187,
+        play_end: now,
+        play_start: now - 30000,
+      });
+
+      if (ad?.status === 1) {
+        rateLimited = 0;
+        serverTouched = true;
+        remain = ad.data?.remain ?? remain;
+        if ((ad.data?.award_vip_hour ?? 0) > 0) claimed += 1;
+        onProgress?.(
+          claimed > 0 ? `领取中 ${claimed}/${CLAIM_DAILY_TOTAL} 次…` : '已连接服务端，正在领取…'
+        );
+        if (remain === 0) break;
+      } else if (ad?.error_code === CLAIM_RATE_LIMITED) {
+        rateLimited += 1;
+        lastMsg = ad.error_msg || '领取过于频繁';
+        if (rateLimited >= CLAIM_RATE_RETRY) break;
+        await new Promise((resolve) => setTimeout(resolve, CLAIM_RETRY_BACKOFF_MS));
+        continue;
+      } else if (ad?.error_code === CLAIM_QUOTA_EXHAUSTED) {
+        quotaExhausted = true;
+        break;
+      } else {
+        lastMsg = ad?.error_msg || `领取失败 (error_code: ${ad?.error_code})`;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_INTERVAL_MS));
+    }
+
+    // 3. 到期时间（查询失败不影响领取结果）
+    let expiryHint = '';
     const probe = await probeConceptVipWith(token, userid, platform);
-    if (!probe.ok) {
-      return {
-        success: false,
-        message:
-          probe.reason === 'auth'
-            ? '登录态已失效，请在设置中重新扫码授权'
-            : '签到服务暂不可用，请稍后重试',
-      };
+    if (probe.ok && probe.vipEndTime) expiryHint = `，到期时间 ${probe.vipEndTime}`;
+
+    if (claimed > 0 || remain === 0 || quotaExhausted || serverTouched) {
+      await saveUserSettings({ lastCheckinDate: todayLocalDate() });
+      const claimMsg =
+        claimed > 0
+          ? `成功领取 ${claimed} 次`
+          : quotaExhausted || remain === 0
+            ? '今日次数已领满'
+            : '已到账（服务端已确认）';
+      return { success: true, message: `概念版会员打卡完成：${claimMsg}${expiryHint}` };
     }
 
-    onProgress?.('正在确认会员权益…');
-    if (!probe.isVip || !probe.vipEndTime) {
-      return {
-        success: false,
-        message: '当前账号无有效概念版会员权益，请在酷狗概念版客户端完成每日领取后再试',
-      };
-    }
-
-    await saveUserSettings({ lastCheckinDate: todayLocalDate() });
-    return { success: true, message: `权益有效，到期时间 ${probe.vipEndTime}（已记录今日打卡）` };
+    return { success: false, message: lastMsg || '签到失败：未领取到任何会员时长' };
   } catch (err) {
-    console.warn('[checkinConceptVip] 签到失败:', err);
+    console.warn('[checkin] 签到失败:', err);
     return { success: false, message: err instanceof Error ? err.message : '签到网络异常' };
   }
 }

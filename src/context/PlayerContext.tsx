@@ -1367,11 +1367,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ms.setActionHandler('stop', () => actionsRef.current.pause());
       ms.setActionHandler('previoustrack', () => actionsRef.current.prev());
       ms.setActionHandler('nexttrack', () => actionsRef.current.next());
-      ms.setActionHandler('seekto', (d) => {
-        if (d.seekTime != null) seek(d.seekTime);
-      });
-      // 不要注册 seekbackward / seekforward：macOS 控制中心会拿这对「快进快退」挤掉
-      // 上一首 / 下一首，按钮位置变成两个圆弧箭头。
+      // 只注册上一首/下一首：macOS 控制中心的「正在播放」面板会把 seek 类动作
+      // （seekto / seekbackward / seekforward）渲染成两个圆弧箭头，挤掉上一首/下一首的位置。
     } catch {
       // 当前平台不支持的 action 忽略
     }
