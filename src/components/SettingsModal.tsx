@@ -19,6 +19,7 @@ import {
 import { checkinConceptVip, fetchUserProfile, getUserSettings, saveUserSettings } from '../services/audioSource';
 import { checkLoginQrCode, createLoginQrCode } from '../services/kugouAuth';
 import { usePlayer } from '../context/PlayerContext';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import type { UserSettings } from '../types/music';
 
 interface SettingsModalProps {
@@ -149,6 +150,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     }
   }, [isOpen]);
+
+  // Android 返回键关闭设置弹窗
+  useOverlayBack(isOpen, onClose, OVERLAY_PRIORITY.settingsModal);
 
   if (!isOpen) return null;
 
@@ -468,21 +472,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                       </span>
                     )}
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard
-                          .writeText(
-                            JSON.stringify({ token: settings.kugouToken, userid: settings.kugouUserId })
-                          )
-                          .then(() => setCheckinMessage('已复制凭据，可在手机端手动授权中粘贴'));
-                      }}
-                      className="btn btn-quiet"
-                      style={{ height: 22, padding: '0 6px', fontSize: 'var(--fs-1)' }}
-                      title="复制授权凭据"
-                    >
-                      复制凭据
-                    </button>
                   </div>
                 </div>
 

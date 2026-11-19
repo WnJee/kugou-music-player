@@ -31,18 +31,14 @@ import {
 import { usePlayer } from '../context/PlayerContext';
 import { AudioOptionsMenu } from './AudioOptionsMenu';
 import { LyricsScroller } from './LyricsScroller';
+import { PlaybackProgress } from './PlaybackProgress';
+import { formatTime } from './playbackTime';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import type { PlayMode } from '../types/music';
 
 interface MobileLyricsModalProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-function formatTime(secs: number): string {
-  if (!secs || isNaN(secs)) return '0:00';
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 const MODE_LABEL: Record<PlayMode, string> = {
@@ -63,8 +59,6 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
   const {
     currentSong,
     isPlaying,
-    currentTime,
-    duration,
     togglePlay,
     nextSong,
     prevSong,
@@ -108,11 +102,12 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isQueueOpen, isOpen]);
 
+  // 队列抽屉是播放页内部的二级层，返回键先关它
+  useOverlayBack(isQueueOpen, () => setIsQueueOpen(false), OVERLAY_PRIORITY.nested);
+
   if (!isOpen || !currentSong) return null;
 
   const VolIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
-  const remaining = Math.max(0, (duration || 0) - currentTime);
-  const pct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
   return (
     <div className="mnp">
@@ -191,25 +186,7 @@ export const MobileLyricsModal: React.FC<MobileLyricsModalProps> = ({ isOpen, on
         className="relative shrink-0"
         style={{ padding: '0 22px', paddingBottom: 'max(18px, env(safe-area-inset-bottom))' }}
       >
-        <div className="seek seek-lg">
-          <div className="seek-track" aria-hidden>
-            <div className="seek-fill" style={{ width: `${pct}%` }} />
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={duration > 0 ? duration : 100}
-            step={0.1}
-            value={Math.min(currentTime, duration || 100)}
-            onChange={(e) => seek(Number(e.target.value))}
-            className="seek-input"
-            aria-label="播放进度"
-          />
-        </div>
-        <div className="flex items-center justify-between" style={{ marginTop: 2 }}>
-          <span className="bar-times">{formatTime(currentTime)}</span>
-          <span className="bar-times">−{formatTime(remaining)}</span>
-        </div>
+        <PlaybackProgress variant="mobile" />
 
         <div className="flex items-center" style={{ marginTop: 12 }}>
           <button

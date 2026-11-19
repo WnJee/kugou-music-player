@@ -4,8 +4,9 @@
  * 视觉口径见 DESIGN.md：暖墨底 + 赭橙单一主色 + 发丝线分区
  */
 
-import React, { useState } from 'react';
-import { PlayerProvider } from './context/PlayerContext';
+import React, { useEffect, useRef, useState } from 'react';
+import { emit, listen } from '@tauri-apps/api/event';
+import { PlayerProvider, usePlayer } from './context/PlayerContext';
 import { Sidebar } from './components/Sidebar';
 import { SongList } from './components/SongList';
 import { LyricsPanel } from './components/LyricsPanel';
@@ -13,18 +14,83 @@ import { PlayerBar } from './components/PlayerBar';
 import { ImportModal } from './components/ImportModal';
 import { SettingsModal } from './components/SettingsModal';
 import { UpdateModal } from './components/UpdateModal';
+import { closeTopOverlay } from './components/overlayStack';
+import { isTauriEnvironment } from './services/http';
+import { checkForUpdate, type UpdateCheckResult } from './services/updater';
+
+/** 打开更新弹窗时带入的结果：null 表示这次打开要现场检查一次 */
+interface UpdateDialogState {
+  initial: UpdateCheckResult | null;
+}
 
 const AppContent: React.FC = () => {
+  const { currentSong, togglePlay, nextSong, prevSong } = usePlayer();
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  // 更新弹窗：0 = 未打开（启动静默检查），>0 = 打开并触发一次检查
-  const [updateCheckSignal, setUpdateCheckSignal] = useState(0);
-  const [isUpdateOpen, setIsUpdateOpen] = useState(false);
+  const [updateDialog, setUpdateDialog] = useState<UpdateDialogState | null>(null);
+  // 手动检查一旦发生，迟到的启动静默结果直接丢弃，两边不互相覆盖
+  const manualCheckedRef = useRef(false);
+
+  // 播放动作未必是稳定引用，监听只注册一次，回调里现取
+  const mediaRef = useRef({ togglePlay, nextSong, prevSong });
+  mediaRef.current = { togglePlay, nextSong, prevSong };
 
   const openUpdateModal = () => {
-    setUpdateCheckSignal((n) => n + 1);
-    setIsUpdateOpen(true);
+    manualCheckedRef.current = true;
+    setUpdateDialog({ initial: null });
   };
+
+  // 启动静默检查：不打扰，也不提示「已是最新」，只有真发现新版本才开弹窗
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void checkForUpdate().then((res) => {
+        if (cancelled || manualCheckedRef.current) return;
+        if (!res.ok || !res.available) return;
+        setUpdateDialog({ initial: res });
+      });
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  // Android 物理返回键：有弹层就关最内层，没有就不接管，让原生决定是否退出
+  useEffect(() => {
+    const onBack = () => {
+      closeTopOverlay();
+    };
+    document.addEventListener('app-back', onBack);
+    return () => document.removeEventListener('app-back', onBack);
+  }, []);
+
+  // 菜单栏 / 托盘 / 蓝牙媒体键（仅 Tauri 桌面端有原生入口）
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<string>('app:media-control', (event) => {
+      const handlers = mediaRef.current;
+      if (event.payload === 'toggle') handlers.togglePlay();
+      else if (event.payload === 'next') handlers.nextSong();
+      else if (event.payload === 'prev') handlers.prevSong();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 当前曲目变化时同步托盘文案（仅 Tauri 桌面端）
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    const label = currentSong ? `${currentSong.songName} - ${currentSong.singerName}` : '';
+    void emit('tray:set-now-playing', label);
+  }, [currentSong]);
 
   return (
     <div className="app-shell">
@@ -53,9 +119,12 @@ const AppContent: React.FC = () => {
         onClose={() => setIsSettingsOpen(false)}
         onOpenUpdate={openUpdateModal}
       />
-      {/* 应用更新弹窗（启动静默检查 + 手动检查） */}
-      {isUpdateOpen && (
-        <UpdateModal checkSignal={updateCheckSignal} onClose={() => setIsUpdateOpen(false)} />
+      {/* 应用更新弹窗：启动静默检查发现新版本时自动打开，也可手动打开 */}
+      {updateDialog && (
+        <UpdateModal
+          initialResult={updateDialog.initial}
+          onClose={() => setUpdateDialog(null)}
+        />
       )}
     </div>
   );

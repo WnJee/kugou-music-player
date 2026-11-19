@@ -4,14 +4,13 @@
  * 视觉口径见 DESIGN.md：表头只出现一次、行分隔用发丝线、选中靠 2px 竖条
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   Check,
   FolderPlus,
   Loader2,
-  Plus,
   Play,
   Search,
   Settings,
@@ -21,38 +20,14 @@ import {
 import { usePlayer } from '../context/PlayerContext';
 import { searchKuGouSongs } from '../services/kugouPlaylist';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
+import { SongRow } from './SongRow';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import type { KuGouSong } from '../types/music';
 
 interface SongListProps {
   onOpenImport: () => void;
   onOpenSettings: () => void;
 }
-
-function formatSeconds(secs: number): string {
-  if (!secs || isNaN(secs)) return '--:--';
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-const coverStyle: React.CSSProperties = {
-  width: 34,
-  height: 34,
-  borderRadius: 'var(--r-1)',
-  objectFit: 'cover',
-  flexShrink: 0,
-  background: 'var(--lift)',
-};
-
-/** 封面缺图时显示曲名首字，比通用音符图标更有信息量 */
-const SongCover: React.FC<{ song: KuGouSong }> = ({ song }) =>
-  song.coverUrl ? (
-    <img src={song.coverUrl} alt="" className="row-cover" loading="lazy" />
-  ) : (
-    <span className="cover-ph" data-size="md" style={coverStyle} aria-hidden>
-      {song.songName.trim().charAt(0) || '·'}
-    </span>
-  );
 
 export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings }) => {
   const {
@@ -78,6 +53,39 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
   const [isRemoving, setIsRemoving] = useState(false);
   const [removeNotice, setRemoveNotice] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(
     null
+  );
+
+  // 行组件用 memo，回调必须保持引用稳定，否则整表会跟着重渲染
+  const handlePlay = useCallback(
+    (song: KuGouSong) => {
+      void playSong(song);
+    },
+    [playSong]
+  );
+  const handlePlayFromSearch = useCallback(
+    (song: KuGouSong) => {
+      void playSong(song, { insertFront: true });
+    },
+    [playSong]
+  );
+  const handleAddSong = useCallback((song: KuGouSong) => {
+    setSelectedSongForAdd(song);
+  }, []);
+  const handleRequestRemove = useCallback((song: KuGouSong) => {
+    setRemoveNotice(null);
+    setPendingRemoveSong(song);
+  }, []);
+
+  // 歌单抽屉与移除确认都能被 Android 返回键关掉
+  useOverlayBack(isPlaylistDrawerOpen, () => setIsPlaylistDrawerOpen(false), OVERLAY_PRIORITY.drawer);
+  useOverlayBack(
+    Boolean(pendingRemoveSong),
+    () => {
+      if (isRemoving) return;
+      setPendingRemoveSong(null);
+      setRemoveNotice(null);
+    },
+    OVERLAY_PRIORITY.nested
   );
 
   const handleConfirmRemove = async () => {
@@ -350,58 +358,18 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                     <span>时长</span>
                     <span>操作</span>
                   </div>
-                  {globalResults.map((song, index) => {
-                    const isCurrent = currentSong?.hash === song.hash;
-                    return (
-                      <div
-                        key={`${song.hash}-${index}`}
-                        data-song-hash={song.hash}
-                        data-playing={isCurrent}
-                        onClick={() => playSong(song, { insertFront: true })}
-                        className="row"
-                        style={{ gridTemplateColumns: '30px minmax(0,1fr) 74px 72px' }}
-                      >
-                        <span className="row-idx">
-                          {isCurrent && isPlaying ? (
-                            <span className="bars">
-                              <i />
-                              <i />
-                              <i />
-                            </span>
-                          ) : (
-                            <span className="mono">{String(index + 1).padStart(2, '0')}</span>
-                          )}
-                        </span>
-
-                        <span className="min-w-0">
-                          <span className="flex items-center gap-2.5">
-                            <SongCover song={song} />
-                            <span className="min-w-0 flex-1">
-                              <span className="row-title block">{song.songName}</span>
-                              <span className="row-sub block">{song.singerName}</span>
-                            </span>
-                          </span>
-                        </span>
-
-                        <span className="row-time">{formatSeconds(song.duration)}</span>
-
-                        <span className="row-actions">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSongForAdd(song);
-                            }}
-                            className="icon-btn"
-                            style={{ width: 26, height: 26 }}
-                            title="加入歌单"
-                          >
-                            <Plus size={14} strokeWidth={1.8} />
-                          </button>
-                        </span>
-                      </div>
-                    );
-                  })}
+                  {globalResults.map((song, index) => (
+                    <SongRow
+                      key={`${song.hash}-${index}`}
+                      variant="search"
+                      song={song}
+                      index={index}
+                      isCurrent={currentSong?.hash === song.hash}
+                      isPlaying={isPlaying}
+                      onPlay={handlePlayFromSearch}
+                      onAdd={handleAddSong}
+                    />
+                  ))}
                 </div>
               )}
             </>
@@ -538,85 +506,18 @@ export const SongList: React.FC<SongListProps> = ({ onOpenImport, onOpenSettings
                   </p>
                 </div>
               ) : (
-                filteredPlaylistSongs.map((song: KuGouSong, index: number) => {
-                  const isCurrent = currentSong?.hash === song.hash;
-                  return (
-                    <div
-                      key={`${song.hash}-${index}`}
-                      data-song-hash={song.hash}
-                      data-playing={isCurrent}
-                      onClick={() => playSong(song)}
-                      className="row group"
-                    >
-                      <span className="row-idx">
-                        {isCurrent && isPlaying ? (
-                          <span className="bars">
-                            <i />
-                            <i />
-                            <i />
-                          </span>
-                        ) : (
-                          <span className="mono block group-hover:hidden">
-                            {String(index + 1).padStart(2, '0')}
-                          </span>
-                        )}
-                        {!(isCurrent && isPlaying) && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              playSong(song);
-                            }}
-                            className="hidden group-hover:block"
-                            title="播放"
-                            style={{ color: 'var(--ink-0)' }}
-                          >
-                            <Play size={11} strokeWidth={2} fill="currentColor" />
-                          </button>
-                        )}
-                      </span>
-
-                      <span className="flex items-center gap-2.5 min-w-0">
-                        <SongCover song={song} />
-                        <span className="min-w-0 flex-1">
-                          <span className="row-title block">{song.songName}</span>
-                          <span className="row-sub block xl:hidden">{song.singerName}</span>
-                        </span>
-                      </span>
-
-                      <span className="row-artist">{song.singerName}</span>
-                      <span className="row-time">{formatSeconds(song.duration)}</span>
-
-                      <span className="row-actions">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedSongForAdd(song);
-                          }}
-                          className="icon-btn opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                          style={{ width: 26, height: 26 }}
-                          title="加入其他歌单"
-                        >
-                          <Plus size={14} strokeWidth={1.8} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setRemoveNotice(null);
-                            setPendingRemoveSong(song);
-                          }}
-                          className="icon-btn opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                          style={{ width: 26, height: 26 }}
-                          title="从歌单移除"
-                        >
-                          <Trash2 size={14} strokeWidth={1.8} />
-                        </button>
-                      </span>
-                    </div>
-                  );
-                })
+                filteredPlaylistSongs.map((song: KuGouSong, index: number) => (
+                  <SongRow
+                    key={`${song.hash}-${index}`}
+                    song={song}
+                    index={index}
+                    isCurrent={currentSong?.hash === song.hash}
+                    isPlaying={isPlaying}
+                    onPlay={handlePlay}
+                    onAdd={handleAddSong}
+                    onRemove={handleRequestRemove}
+                  />
+                ))
               )}
             </>
           )}

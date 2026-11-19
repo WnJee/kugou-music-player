@@ -217,6 +217,11 @@
     overflow: hidden;
     background: var(--page);
     color: var(--ink-1);
+    /* Android 安全区：状态栏不压住内容，横屏刘海/挖孔左右也让开。
+       桌面端 env() 退化为 0，对三栏布局无影响 */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
   }
 
   .app-body {
@@ -1537,7 +1542,8 @@
     display: flex;
     align-items: center;
     gap: 11px;
-    margin: 0 10px calc(10px + env(safe-area-inset-bottom));
+    margin: 0 calc(10px + env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom))
+      calc(10px + env(safe-area-inset-left, 0px));
     padding: 8px 8px 8px 9px;
     border: 1px solid var(--line);
     border-radius: var(--r-3);
@@ -1733,6 +1739,9 @@
     flex-direction: column;
     overflow: hidden;
     background: var(--page);
+    /* 全屏播放页脱离文档流，安全区需要自己吃 */
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
     animation: rise-sm var(--dur-slow) var(--ease);
   }
 
@@ -1859,6 +1868,9 @@
     flex-direction: column;
     max-height: 68vh;
     padding-bottom: env(safe-area-inset-bottom);
+    /* 横屏刘海/挖孔：底部抽屉的左右内容也让开 */
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
     border-top: 1px solid var(--line);
     border-radius: var(--r-3) var(--r-3) 0 0;
     background: var(--raise);
@@ -1896,6 +1908,8 @@
     border-right: 1px solid var(--line);
     border-radius: 0 var(--r-3) var(--r-3) 0;
     padding-bottom: env(safe-area-inset-bottom);
+    /* 侧边抽屉贴着左边框，让出左刘海 */
+    padding-left: env(safe-area-inset-left, 0px);
     animation: slide-right var(--dur-slow) var(--ease);
   }
 

@@ -24,15 +24,11 @@ import {
 import { usePlayer } from '../context/PlayerContext';
 import { MobileLyricsModal } from './MobileLyricsModal';
 import { AudioOptionsMenu } from './AudioOptionsMenu';
+import { PlaybackProgress } from './PlaybackProgress';
+import { formatTime } from './playbackTime';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import { audioQualityOption } from '../services/audioQuality';
 import type { PlayMode } from '../types/music';
-
-function formatTime(secs: number): string {
-  if (!secs || isNaN(secs)) return '0:00';
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
 
 const MODE_LABEL: Record<PlayMode, string> = {
   sequence: '顺序播放',
@@ -49,51 +45,18 @@ const ModeIcon: React.FC<{ mode: PlayMode; size?: number }> = ({ mode, size = 15
 };
 
 /**
- * 播放进度
- * 原生的 range 轨道伪元素在 WebKit 里无法稳定接收 CSS 变量做渐变填充，
- * 所以这里分离成「可见的轨道（自己画）+ 透明的原生 input（只负责交互）」。
- * 好处：填充、缓冲、hover 手柄都能精确控制，且完全不牺牲键盘与无障碍。
+ * 播放进度不再由本组件订阅：进度每秒刷新多次，交给 PlaybackProgress 自兜，
+ * 底栏本身只在曲目 / 播放态 / 音量变化时重渲染。
  */
-const SeekBar: React.FC<{
-  value: number;
-  max: number;
-  onChange: (v: number) => void;
-  large?: boolean;
-  label: string;
-}> = ({ value, max, onChange, large, label }) => {
-  const safeMax = max > 0 ? max : 100;
-  const pct = Math.min(100, Math.max(0, (value / safeMax) * 100));
-  return (
-    <div className={`seek ${large ? 'seek-lg' : ''}`}>
-      <div className="seek-track" aria-hidden>
-        <div className="seek-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <input
-        type="range"
-        min={0}
-        max={safeMax}
-        step={0.1}
-        value={Math.min(value, safeMax)}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="seek-input"
-        aria-label={label}
-      />
-    </div>
-  );
-};
-
 export const PlayerBar: React.FC = () => {
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [isMobileModalOpen, setIsMobileModalOpen] = useState(false);
   const {
     currentSong,
     isPlaying,
-    currentTime,
-    duration,
     togglePlay,
     nextSong,
     prevSong,
-    seek,
     volume,
     setVolume,
     isMuted,
@@ -122,6 +85,10 @@ export const PlayerBar: React.FC = () => {
     setFlashHash(currentHash);
     window.setTimeout(() => setFlashHash(null), 900);
   };
+
+  // 队列面板与移动端播放页都是可被返回键关闭的层
+  useOverlayBack(isQueueOpen, () => setIsQueueOpen(false), OVERLAY_PRIORITY.nested);
+  useOverlayBack(isMobileModalOpen, () => setIsMobileModalOpen(false), OVERLAY_PRIORITY.mobilePlayer);
 
   // 打开队列直接落到当前播放位置，省掉在长列表里找自己
   // 只在展开这一刻定位：自动切歌时不打断正在翻队列的手
@@ -339,15 +306,7 @@ export const PlayerBar: React.FC = () => {
               </button>
             </div>
 
-            <div className="mt-1 flex w-full max-w-[420px] items-center gap-2.5">
-              <span className="bar-times" style={{ width: 34, textAlign: 'right' }}>
-                {formatTime(currentTime)}
-              </span>
-              <SeekBar value={currentTime} max={duration} onChange={seek} label="播放进度" />
-              <span className="bar-times" style={{ width: 34 }}>
-                {formatTime(duration)}
-              </span>
-            </div>
+            <PlaybackProgress />
           </div>
 
           {/* 右：音质音效 + 音量 */}

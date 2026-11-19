@@ -10,6 +10,7 @@ import { SlidersHorizontal } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { AUDIO_QUALITY_OPTIONS, audioQualityOption } from '../services/audioQuality';
 import { AUDIO_EFFECT_PRESETS } from '../services/audioEffects';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 
 interface AudioOptionsMenuProps {
   direction?: 'up' | 'down';
@@ -35,6 +36,9 @@ export const AudioOptionsMenu: React.FC<AudioOptionsMenuProps> = ({ direction = 
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [isOpen]);
+
+  // 音效面板自己也是弹层：返回键先收它，与 Escape 行为一致
+  useOverlayBack(isOpen, () => setIsOpen(false), OVERLAY_PRIORITY.audioMenu);
 
   const quality = audioQualityOption(audioQuality);
   const effectOn = audioEffect !== 'off';

@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import { AlertCircle, Loader2, X } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { importKuGouPlaylist } from '../services/kugouPlaylist';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -18,6 +19,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose }) => 
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Android 返回键关闭导入弹窗
+  useOverlayBack(isOpen, onClose, OVERLAY_PRIORITY.importModal);
 
   if (!isOpen) return null;
 

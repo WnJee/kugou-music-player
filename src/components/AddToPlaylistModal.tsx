@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { Check, Loader2, X } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 import type { KuGouPlaylist, KuGouSong } from '../types/music';
 
 interface AddToPlaylistModalProps {
@@ -59,6 +60,9 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({
   const { playlists, addSongToPlaylist } = usePlayer();
   const [addingPlaylistId, setAddingPlaylistId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  // Android 返回键关闭加入歌单弹窗
+  useOverlayBack(isOpen && Boolean(song), onClose, OVERLAY_PRIORITY.nested);
 
   if (!isOpen || !song) return null;
 

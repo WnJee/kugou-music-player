@@ -17,21 +17,27 @@ import {
   downloadAndInstallUpdate,
   type UpdateCheckResult,
 } from '../services/updater';
+import { OVERLAY_PRIORITY, useOverlayBack } from './overlayStack';
 
 interface UpdateModalProps {
-  /** 外部（设置弹窗等）触发立即检查 */
-  checkSignal: number;
+  /** 启动静默检查拿到的结果：有值直接展示，不再重复请求 */
+  initialResult?: UpdateCheckResult | null;
   onClose: () => void;
 }
 
-export const UpdateModal: React.FC<UpdateModalProps> = ({ checkSignal, onClose }) => {
-  const [result, setResult] = useState<UpdateCheckResult | null>(null);
+export const UpdateModal: React.FC<UpdateModalProps> = ({ initialResult, onClose }) => {
+  const [result, setResult] = useState<UpdateCheckResult | null>(initialResult ?? null);
   const [checking, setChecking] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState({ downloaded: 0, total: 0 });
   const [message, setMessage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const startedRef = useRef(false);
+  // 挂载后最多自动请求一次，避免每次重渲染都打接口
+  const checkedOnMountRef = useRef(false);
+
+  // 下载中不允许关闭，返回键与遮罩点击保持同一条规则
+  useOverlayBack(true, downloading ? () => {} : onClose, OVERLAY_PRIORITY.updateModal);
 
   const runCheck = async () => {
     setChecking(true);
@@ -51,19 +57,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ checkSignal, onClose }
     }
   };
 
-  // 启动静默检查 + 外部 checkSignal 触发检查
+  // 手动打开时强制检查一次；启动静默检查已带来结果则直接展示
   useEffect(() => {
-    // 初次挂载：3 秒后静默检查（等界面加载完），不弹「已是最新」提示
-    if (checkSignal === 0) {
-      const t = setTimeout(async () => {
-        const res = await checkForUpdate();
-        if (res.available) setResult(res);
-      }, 3000);
-      return () => clearTimeout(t);
-    }
+    if (initialResult?.available) return;
+    if (checkedOnMountRef.current) return;
+    checkedOnMountRef.current = true;
     void runCheck();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkSignal]);
+  }, [initialResult]);
 
   const handleUpdate = async () => {
     if (startedRef.current) return;
