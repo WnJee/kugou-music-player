@@ -40,27 +40,31 @@ function signWebParams(params: Record<string, string | number>): string {
 }
 
 /**
+ * 组装 Web 登录接口的公共参数（含签名），两个接口共用同一套设备标识与签名。
+ * clienttime 每次调用重新取，避免并发轮询时复用过期时间戳。
+ */
+async function buildWebSignedParams(
+  appid: number,
+  extra: Record<string, string | number>
+): Promise<Record<string, string | number>> {
+  const params: Record<string, string | number> = {
+    appid,
+    clienttime: Math.floor(Date.now() / 1000),
+    clientver: 20489,
+    dfid: '-',
+    mid: await getDeviceMid(),
+    plat: 4,
+    srcappid: 2919,
+    uuid: '-',
+    ...extra,
+  };
+  return { ...params, signature: signWebParams(params) };
+}
+
+/**
  * 1. 获取登录二维码及 Key
  */
 export async function createLoginQrCode(): Promise<QrCodeKeyResult> {
-  const clienttime = Math.floor(Date.now() / 1000);
-  const mid = await getDeviceMid();
-
-  const params: Record<string, string | number> = {
-    appid: KUGOU_QRCODE_APPID,
-    clienttime,
-    clientver: 20489,
-    dfid: '-',
-    mid,
-    plat: 4,
-    qrcode_txt: `https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=${KUGOU_ANDROID_APPID}&`,
-    srcappid: 2919,
-    type: 1,
-    uuid: '-',
-  };
-
-  const signature = signWebParams(params);
-
   interface QrResponse {
     status: number;
     error_code: number;
@@ -70,10 +74,13 @@ export async function createLoginQrCode(): Promise<QrCodeKeyResult> {
     };
   }
 
-  const res = await httpGet<QrResponse>('https://login-user.kugou.com/v2/qrcode', {
-    ...params,
-    signature,
-  });
+  const res = await httpGet<QrResponse>(
+    'https://login-user.kugou.com/v2/qrcode',
+    await buildWebSignedParams(KUGOU_QRCODE_APPID, {
+      qrcode_txt: `https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=${KUGOU_ANDROID_APPID}&`,
+      type: 1,
+    })
+  );
 
   if (res && res.status === 1 && res.data?.qrcode && res.data?.qrcode_img) {
     return {
@@ -90,23 +97,6 @@ export async function createLoginQrCode(): Promise<QrCodeKeyResult> {
  * @param qrcodeKey 第一步获取到的 qrcode 字符串
  */
 export async function checkLoginQrCode(qrcodeKey: string): Promise<QrCodeStatusResult> {
-  const clienttime = Math.floor(Date.now() / 1000);
-  const mid = await getDeviceMid();
-
-  const params: Record<string, string | number> = {
-    appid: KUGOU_ANDROID_APPID,
-    clienttime,
-    clientver: 20489,
-    dfid: '-',
-    mid,
-    plat: 4,
-    qrcode: qrcodeKey,
-    srcappid: 2919,
-    uuid: '-',
-  };
-
-  const signature = signWebParams(params);
-
   interface CheckResponse {
     status: number;
     error_code: number;
@@ -119,13 +109,18 @@ export async function checkLoginQrCode(qrcodeKey: string): Promise<QrCodeStatusR
     };
   }
 
-  const res = await httpGet<CheckResponse>('https://login-user.kugou.com/v2/get_userinfo_qrcode', {
-    ...params,
-    signature,
-  });
+  const res = await httpGet<CheckResponse>(
+    'https://login-user.kugou.com/v2/get_userinfo_qrcode',
+    await buildWebSignedParams(KUGOU_ANDROID_APPID, { qrcode: qrcodeKey })
+  );
 
   if (res && res.status === 1 && res.data) {
     const rawStatus = res.data.status;
+    // 已确认登录但未下发 token：视为本次扫码失败，按二维码失效处理，
+    // 避免轮询一直成功拿到「已确认」却永远等不到 token
+    if (rawStatus === 4 && !res.data.token) {
+      return { status: 5, message: '登录授权未返回有效凭证，请点击刷新二维码重试' };
+    }
     return {
       status: rawStatus,
       token: res.data.token,
