@@ -20,8 +20,8 @@ export interface AudioQualityOption {
 }
 
 export const AUDIO_QUALITY_OPTIONS: AudioQualityOption[] = [
-  { id: '128', label: '标准', badge: '128K', spec: 'MP3 128 kbps', params: [128, '128'] },
-  { id: '320', label: '高音质', badge: '320K', spec: 'MP3 320 kbps', params: [320, '320'] },
+  { id: '128', label: '标准', badge: '128K', spec: 'MP3 128 kbps', params: [128] },
+  { id: '320', label: '高音质', badge: '320K', spec: 'MP3 320 kbps', params: [320] },
   { id: 'flac', label: '无损', badge: 'FLAC', spec: 'FLAC 44.1 kHz', params: ['flac', 640] },
   { id: 'hires', label: 'Hi-Res', badge: 'HR', spec: 'FLAC 24 bit 96 kHz', params: ['hires'] },
 ];
@@ -34,12 +34,16 @@ export function audioQualityOption(id?: AudioQuality | null): AudioQualityOption
   return (id && BY_ID.get(id)) || BY_ID.get(DEFAULT_AUDIO_QUALITY) || AUDIO_QUALITY_OPTIONS[0];
 }
 
-/** 请求链：目标档位在前，之后按档位从高到低依次回退 */
+/**
+ * 请求链：目标档位在前，之后按档位从高到低依次回退。
+ * 结果去重：同一档位的数字/字符串写法若序列化后等价，只请求一次，避免重复请求触发限流。
+ */
 export function audioQualityChain(id?: AudioQuality | null): Array<number | string> {
   const top = AUDIO_QUALITY_OPTIONS.indexOf(audioQualityOption(id));
-  return AUDIO_QUALITY_OPTIONS.slice(0, top + 1)
+  const chain = AUDIO_QUALITY_OPTIONS.slice(0, top + 1)
     .reverse()
     .flatMap((option) => option.params);
+  return Array.from(new Set(chain));
 }
 
 /** 网关参数反查实际到手的档位 */

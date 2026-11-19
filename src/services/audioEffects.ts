@@ -70,9 +70,32 @@ export class AudioEffectChain {
     this.setPreset('off');
   }
 
-  /** 浏览器要求音频上下文必须由用户手势唤醒 */
-  resume(): Promise<void> {
-    return this.ctx.state === 'suspended' ? this.ctx.resume() : Promise.resolve();
+  /**
+   * 浏览器要求音频上下文必须由用户手势唤醒。
+   * 返回是否真的进入 running：返回 false 时调用方应回退到无音效播放，
+   * 否则整首歌会被挂在暂停的 AudioContext 上变成静音。
+   */
+  async resume(): Promise<boolean> {
+    return (await this.resumeDetailed()).ok;
+  }
+
+  /** 唤醒 AudioContext 并给出可判定的失败原因（不吞掉错误） */
+  async resumeDetailed(): Promise<EffectResumeResult> {
+    if (this.ctx.state === 'running') return { ok: true };
+    try {
+      await this.ctx.resume();
+      // 早退分支已把 this.ctx.state 窄化成非 running，这里重新取值判定
+      const resumed = String(this.ctx.state) === 'running';
+      return resumed ? { ok: true } : { ok: false, reason: 'rejected' };
+    } catch (err) {
+      console.warn('[AudioEffectChain] AudioContext 唤醒失败:', err);
+      return { ok: false, reason: 'error' };
+    }
+  }
+
+  /** 当前音频图是否处于运行状态（供调用方判定是否已静音） */
+  get running(): boolean {
+    return this.ctx.state === 'running';
   }
 
   setPreset(id?: AudioEffectId | null): void {
@@ -89,17 +112,43 @@ export class AudioEffectChain {
   }
 }
 
-/** 探测音源能否被 Web Audio 取用（跨域且未放行 ACAO 的资源接进音频图只会静音） */
+/** 音效链唤醒结果：调用方根据 reason 决定是重试用还是降级无音效 */
+export interface EffectResumeResult {
+  ok: boolean;
+  /** rejected = 被阻断重试也没用；error = 唤醒报错可重试 */
+  reason?: 'rejected' | 'error';
+}
+
+/** 丢弃响应体，避免探测请求一直占着连接 */
+async function discardBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* 无 body 或已被消费 */
+  }
+}
+
+/**
+ * 探测音源能否被 Web Audio 取用（跨域且未放行 ACAO 的资源接进音频图只会静音）。
+ * 不能用 Range 这类自定义请求头探测：它会触发 CORS 预检，预检失败会被误判成不可用，
+ * 导致音效链整首静音。这里只用简单请求（HEAD 优先，不支持 HEAD 的 CDN 再退 GET），
+ * 并且无论成败都取消/丢弃响应体。
+ */
 export async function checkAudioCors(url: string): Promise<boolean> {
   if (!url) return false;
+
   try {
-    const res = await window.fetch(url, {
-      method: 'GET',
-      headers: { Range: 'bytes=0-1' },
-      mode: 'cors',
-      cache: 'no-store',
-    });
-    return res.ok || res.status === 206;
+    const head = await window.fetch(url, { method: 'HEAD', mode: 'cors', cache: 'no-store' });
+    if (head.ok || head.status === 206) {
+      await discardBody(head);
+      return true;
+    }
+    await discardBody(head);
+
+    const get = await window.fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store' });
+    const usable = get.ok || get.status === 206;
+    await discardBody(get);
+    return usable;
   } catch {
     return false;
   }
