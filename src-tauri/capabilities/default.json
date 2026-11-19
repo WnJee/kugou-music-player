@@ -7,25 +7,98 @@
   ],
   "permissions": [
     "core:default",
-    "store:default",
+    "store:allow-load",
+    "store:allow-get",
+    "store:allow-set",
+    "store:allow-save",
     {
       "identifier": "http:default",
       "allow": [
         {
-          "url": "https://**"
+          "url": "https://gateway.kugou.com/*"
         },
         {
-          "url": "http://**"
+          "url": "https://gatewayretry.kugou.com/*"
         },
         {
-          "url": "https://*:*/**"
+          "url": "http://gateway.kugou.com/*"
         },
         {
-          "url": "http://*:*/**"
+          "url": "http://gatewayretry.kugou.com/*"
+        },
+        {
+          "url": "https://login-user.kugou.com/*"
+        },
+        {
+          "url": "https://songsearch.kugou.com/*"
+        },
+        {
+          "url": "http://songsearch.kugou.com/*"
+        },
+        {
+          "url": "https://mobilecdn.kugou.com/*"
+        },
+        {
+          "url": "http://mobilecdn.kugou.com/*"
+        },
+        {
+          "url": "https://trackercdn.kugou.com/*"
+        },
+        {
+          "url": "http://trackercdn.kugou.com/*"
+        },
+        {
+          "url": "https://krcs.kugou.com/*"
+        },
+        {
+          "url": "http://krcs.kugou.com/*"
+        },
+        {
+          "url": "https://t1.kugou.com/*"
+        },
+        {
+          "url": "https://t4.kugou.com/*"
+        },
+        {
+          "url": "https://m.kugou.com/*"
+        },
+        {
+          "url": "https://www.kugou.com/*"
+        },
+        {
+          "url": "https://h5.kugou.com/*"
+        },
+        {
+          "url": "https://activity.kugou.com/*"
+        },
+        {
+          "url": "https://usercenter.kugou.com/*"
+        },
+        {
+          "url": "https://kugouvip.kugou.com/*"
+        },
+        {
+          "url": "https://imge.kugou.com/*"
+        },
+        {
+          "url": "https://pubsongscdn.kugou.com/*"
+        },
+        {
+          "url": "https://cloudlist.service.kugou.com/*"
+        },
+        {
+          "url": "https://api.injahow.cn/*"
+        },
+        {
+          "url": "http://localhost:*/*"
+        },
+        {
+          "url": "http://127.0.0.1:*/*"
         }
       ]
     },
-    "updater:default",
-    "process:default"
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:allow-restart"
   ]
 }
