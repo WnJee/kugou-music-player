@@ -24,7 +24,7 @@ interface UpdateDialogState {
 }
 
 const AppContent: React.FC = () => {
-  const { currentSong, togglePlay, nextSong, prevSong } = usePlayer();
+  const { currentSong, isPlaying, togglePlay, nextSong, prevSong } = usePlayer();
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [updateDialog, setUpdateDialog] = useState<UpdateDialogState | null>(null);
@@ -66,6 +66,11 @@ const AppContent: React.FC = () => {
     document.addEventListener('app-back', onBack);
     return () => document.removeEventListener('app-back', onBack);
   }, []);
+
+  // Android 前台服务保活：原生 onStop 时读取 window.__kugouPlaying 决定要不要 startForegroundService
+  useEffect(() => {
+    (window as Window & { __kugouPlaying?: boolean }).__kugouPlaying = isPlaying;
+  }, [isPlaying]);
 
   // 菜单栏 / 托盘 / 蓝牙媒体键（仅 Tauri 桌面端有原生入口）
   useEffect(() => {
