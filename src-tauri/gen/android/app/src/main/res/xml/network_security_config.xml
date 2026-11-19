@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  明文流量收窄：酷狗有一批接口只提供 http（krcs / songsearch / trackercdn / gateway / mobilecdn / gatewayretry），
+  这些域名之外一律要求 TLS。minSdk 24 起本配置优先于 android:usesCleartextTraffic。
+  release 包请确认这里没有滥用通配；dev 用局域网 IP 连 Vite 时，需要把该 IP 补进下面的列表。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">gateway.kugou.com</domain>
+        <domain includeSubdomains="false">gatewayretry.kugou.com</domain>
+        <domain includeSubdomains="false">songsearch.kugou.com</domain>
+        <domain includeSubdomains="false">mobilecdn.kugou.com</domain>
+        <domain includeSubdomains="false">trackercdn.kugou.com</domain>
+        <domain includeSubdomains="false">krcs.kugou.com</domain>
+
+        <!-- 本机 / 模拟器宿主，供 tauri android dev 用 -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

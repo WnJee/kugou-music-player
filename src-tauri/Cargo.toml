@@ -13,11 +13,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# tray-icon: Windows / Linux 上关闭主界面后靠托盘叫回来（只在桌面端编译）
+# tray-icon: 桌面端托盘 / 菜单栏图标，主界面隐藏后靠它叫回来并做播放控制
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-http = "2"
 tauri-plugin-store = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-serde = { version = "1", features = ["derive"] }
+# tauri::generate_context! 展开后会直接引用 crate 根的 serde_json，不能删。
 serde_json = "1"
+
+# 桌面端独占插件（移动端不编译，只影响非 Android / iOS 目标）
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+
+# 体积优化：官方推荐的 Tauri release 配置
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
